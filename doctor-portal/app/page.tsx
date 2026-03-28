@@ -99,7 +99,7 @@ export default function DashboardPage() {
         <StatsCard
           title="Total Cases"
           value={cases.length}
-          subtitle={`${cases.filter((c) => c.status === "pending").length} pending review`}
+          subtitle={`${cases.filter((c) => c.status === "pending_review" || c.status === "intake_complete").length} pending review`}
           icon={FileText}
         />
         <StatsCard

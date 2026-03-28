@@ -147,7 +147,7 @@ export default function CasesPage() {
           </span>
         </div>
         <p className="text-sm text-gray-500 mt-1">
-          {cases.length} total cases &middot; {cases.filter((c) => c.status === "pending").length} pending review
+          {cases.length} total cases &middot; {cases.filter((c) => c.status === "pending_review" || c.status === "intake_complete").length} pending review
         </p>
       </div>
 
@@ -194,9 +194,11 @@ export default function CasesPage() {
             className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-who-blue/20 focus:border-who-blue"
           >
             <option value="">All Status</option>
-            <option value="pending">Pending</option>
+            <option value="pending_review">Pending Review</option>
             <option value="assigned">Assigned</option>
-            <option value="resolved">Resolved</option>
+            <option value="responded">Responded</option>
+            <option value="escalated">Escalated</option>
+            <option value="closed">Closed</option>
           </select>
         </div>
       </div>
@@ -261,7 +263,7 @@ export default function CasesPage() {
                         {c.status && (
                           <span
                             className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
-                              c.status === "pending"
+                              c.status === "pending_review" || c.status === "intake_complete"
                                 ? "bg-blue-50 text-blue-600"
                                 : c.status === "assigned"
                                 ? "bg-purple-50 text-purple-600"

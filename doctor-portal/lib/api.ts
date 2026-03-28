@@ -72,7 +72,7 @@ export async function getCase(id: string): Promise<Case | null> {
 }
 
 export async function getCaseQueue(): Promise<Case[]> {
-  return fetchWithFallback(`${API_BASE}/cases/queue`, mockCases.filter((c) => c.status === "pending"));
+  return fetchWithFallback(`${API_BASE}/cases/queue`, mockCases.filter((c) => c.status === "pending_review"));
 }
 
 // --- Doctors (live, no mock fallback) ---

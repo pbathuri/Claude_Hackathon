@@ -43,7 +43,7 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
     getCase(params.id).then((data) => {
       setCaseData(data);
       setLoading(false);
-      if (data?.status === "assigned" || data?.status === "resolved") setAssigned(true);
+      if (data?.status === "assigned" || data?.status === "responded" || data?.status === "in_review" || data?.status === "closed") setAssigned(true);
     });
   }, [params.id]);
 

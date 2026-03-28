@@ -18,7 +18,7 @@ export const mockCases: Case[] = [
       "Caller reports worsening abdominal pain that began 3 days ago. Pain is localized to the right lower quadrant, rated 7/10. Accompanied by fever (self-reported ~38.5°C). No vomiting but reports nausea. No recent travel or dietary changes. Rebound tenderness suspected based on caller description.",
     redFlagIndicators: ["Persistent pain", "Fever", "RLQ tenderness"],
     priorityScore: 80.0,
-    status: "pending",
+    status: "pending_review",
   },
   {
     caseId: "b2c3d4e5-f6a7-8901-bcde-f23456789012",
@@ -37,7 +37,7 @@ export const mockCases: Case[] = [
       "Caller reports sudden onset severe headache with photophobia and neck stiffness. Visual disturbances described as 'seeing spots'. No recent head trauma. History of hypertension reported. Kernig's sign could not be assessed remotely.",
     redFlagIndicators: ["Sudden severe headache", "Neck stiffness", "Visual disturbance"],
     priorityScore: 92.0,
-    status: "pending",
+    status: "pending_review",
   },
   {
     caseId: "c3d4e5f6-a7b8-9012-cdef-345678901234",
@@ -76,7 +76,7 @@ export const mockCases: Case[] = [
       "Caller reports red, slightly itchy rash on both forearms. No pain, no fever, no spreading to other areas. No new medications or environmental changes. No known allergies.",
     redFlagIndicators: [],
     priorityScore: 20.0,
-    status: "resolved",
+    status: "responded",
     assignedDoctor: "Dr. Chen",
   },
   {
@@ -96,7 +96,7 @@ export const mockCases: Case[] = [
       "Caller reports bilateral knee and ankle pain with visible swelling. Pain worsens in the morning and improves with activity. No recent injury. Occasional low-grade fever. Family history of rheumatic disease unknown.",
     redFlagIndicators: ["Joint swelling", "Fever"],
     priorityScore: 60.0,
-    status: "pending",
+    status: "pending_review",
   },
   {
     caseId: "f6a7b8c9-d0e1-2345-fabc-678901234567",
@@ -115,7 +115,7 @@ export const mockCases: Case[] = [
       "Caller reports acute onset crushing chest pain radiating to left arm. Shortness of breath and diaphoresis present. Male, estimated 55 years. Reports history of Type 2 diabetes. Pain described as pressure/squeezing. No prior cardiac history known.",
     redFlagIndicators: ["Chest pain", "Radiating to arm", "Shortness of breath", "Diaphoresis"],
     priorityScore: 95.0,
-    status: "pending",
+    status: "pending_review",
   },
   {
     caseId: "a7b8c9d0-e1f2-3456-abcd-789012345678",
@@ -154,7 +154,7 @@ export const mockCases: Case[] = [
       "Caller reports high fever (self-measured 39.2°C), generalized myalgia, fatigue, and mild frontal headache for 4 days. No rash, no cough, no respiratory symptoms. Lives in dengue-endemic area. No recent travel outside region.",
     redFlagIndicators: ["High fever >4 days", "Dengue-endemic area"],
     priorityScore: 65.0,
-    status: "pending",
+    status: "pending_review",
   },
 ];
 
