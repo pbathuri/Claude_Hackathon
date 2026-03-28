@@ -69,7 +69,9 @@ def list_patient_cases(
     List all cases in the frontend doctor-portal contract shape.
     Returns: caseId, patientAlias, country, countryTier, urgency,
     symptomSummary, painScore, symptomDuration, bodyArea, imageUrls,
-    consentGiven, submittedAt, aiStructuredNotes, redFlagIndicators, priorityScore.
+    consentGiven, submittedAt, aiStructuredNotes, redFlagIndicators, priorityScore,
+    status (portal-mapped), kgInsights (when intake stored KG enrichment).
+    Intake is persisted as Case.intake_data (see schemas.intake.IntakeData).
     """
     return get_all_cases_for_frontend(db, status=status, limit=limit)
 

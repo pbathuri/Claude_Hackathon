@@ -20,6 +20,7 @@ from services.scheduler_service import start_scheduler, stop_scheduler
 from database import SessionLocal
 
 from routers import intake, cases, doctors, health_data, caller
+from config import is_knowledge_graph_enabled
 from routers.knowledge_graph import router as kg_router, init_knowledge_graph
 from routers.twilio_voice import router as twilio_router
 
@@ -47,8 +48,14 @@ async def lifespan(app: FastAPI):
     logger.info("Starting background scheduler...")
     start_scheduler()
 
-    logger.info("Initializing medical knowledge graph...")
-    init_knowledge_graph(persist_path="./data/knowledge_graph.json")
+    if is_knowledge_graph_enabled():
+        logger.info("Initializing medical knowledge graph...")
+        init_knowledge_graph(persist_path="./data/knowledge_graph.json")
+    else:
+        logger.info(
+            "ENABLE_KNOWLEDGE_GRAPH is disabled — skipping graph init; "
+            "/kg endpoints will return 503 until enabled."
+        )
 
     logger.info("WHO Telehealth Backend ready")
     yield

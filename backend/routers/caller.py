@@ -8,14 +8,23 @@ to these endpoints for triage, ICD-11 mapping, priority scoring, and case creati
 Integration flow:
   1. POST /caller/session/start     → phone parse, country detect, tier + disclaimer
   2. POST /caller/session/consent   → patient acknowledges disclaimer
-  3. POST /caller/session/submit    → completed symptoms → case creation + triage + ICD-11
-  4. GET  /caller/session/{id}      → check case status (frontend contract shape)
-  5. GET  /caller/disclosure/{cc}   → get verbal disclosure script for a country
+  3. POST /caller/ai-turn           → each user turn (text and/or transcript from client)
+  4. POST /caller/browser-stt/push  → optional: persist browser Web Speech segments (Redis)
+  5. POST /caller/stt               → optional: multipart audio → OpenAI Whisper (multilingual STT)
+  6. POST /caller/session/submit    → completed symptoms → case creation + triage + ICD-11
+  7. GET  /caller/session/{id}      → check case status (frontend contract shape)
+  8. GET  /caller/disclosure/{cc}   → get verbal disclosure script for a country
+
+Where conversation data goes: the web simulator (static/caller.html) sends turns to /caller/ai-turn
+and finalizes with /caller/session/submit. Twilio voice uses /twilio/* webhooks and _submit_twilio_case.
+The external LangGraph agent (src/main.py) calls the same session/start, consent, submit endpoints.
+TTS for the browser is POST /caller/tts (ElevenLabs). STT is browser Web Speech, optional Redis sync,
+and/or POST /caller/stt (Whisper) for recorded audio — not ElevenLabs.
 """
 import os
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -31,6 +40,7 @@ from services.case_service import (
 )
 from services.triage_service import check_emergency_keywords, get_base_score
 from services.icd11_service import map_intake_to_icd11, search_icd11
+from config import is_knowledge_graph_enabled, OPENAI_API_KEY
 
 import logging
 kg_logger = logging.getLogger(__name__)
@@ -286,34 +296,35 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
 
     # ── Knowledge Graph: navigate symptoms for enrichment ────────────
     kg_insights = {}
-    try:
-        from routers.knowledge_graph import _graph, _navigator_sessions
-        if _graph:
-            from knowledge_graph.navigator import ConversationNavigator
-            nav = ConversationNavigator(_graph, case_id=req.case_id)
-            kg_context = nav.process_symptoms(req.symptoms)
+    if is_knowledge_graph_enabled():
+        try:
+            from routers.knowledge_graph import _graph, _navigator_sessions
+            if _graph:
+                from knowledge_graph.navigator import ConversationNavigator
+                nav = ConversationNavigator(_graph, case_id=req.case_id)
+                kg_context = nav.process_symptoms(req.symptoms)
 
-            # Use graph to refine recommended specialty
-            if kg_context.get("suggested_specialties"):
-                intake_data["recommended_specialty"] = kg_context["suggested_specialties"][0]["specialty"]
+                # Use graph to refine recommended specialty
+                if kg_context.get("suggested_specialties"):
+                    intake_data["recommended_specialty"] = kg_context["suggested_specialties"][0]["specialty"]
 
-            # Store graph insights in intake_data for the doctor portal
-            kg_insights = {
-                "activated_conditions": kg_context.get("activated_conditions", [])[:5],
-                "suggested_specialties": kg_context.get("suggested_specialties", [])[:3],
-                "graph_confidence": kg_context.get("graph_confidence", 0),
-                "body_systems": kg_context.get("activated_body_systems", [])[:3],
-            }
-            intake_data["kg_insights"] = kg_insights
+                # Store graph insights in intake_data for the doctor portal
+                kg_insights = {
+                    "activated_conditions": kg_context.get("activated_conditions", [])[:5],
+                    "suggested_specialties": kg_context.get("suggested_specialties", [])[:3],
+                    "graph_confidence": kg_context.get("graph_confidence", 0),
+                    "body_systems": kg_context.get("activated_body_systems", [])[:3],
+                }
+                intake_data["kg_insights"] = kg_insights
 
-            # Store navigator for future backpropagation
-            _navigator_sessions[req.case_id] = nav
-            kg_logger.info("[KG] Case %s enriched: specialty=%s confidence=%.2f",
-                          req.case_id,
-                          intake_data.get("recommended_specialty"),
-                          kg_insights.get("graph_confidence", 0))
-    except Exception as exc:
-        kg_logger.warning("[KG] Graph enrichment failed (non-blocking): %s", exc)
+                # Store navigator for future backpropagation
+                _navigator_sessions[req.case_id] = nav
+                kg_logger.info("[KG] Case %s enriched: specialty=%s confidence=%.2f",
+                              req.case_id,
+                              intake_data.get("recommended_specialty"),
+                              kg_insights.get("graph_confidence", 0))
+        except Exception as exc:
+            kg_logger.warning("[KG] Graph enrichment failed (non-blocking): %s", exc)
 
     # Complete the case intake
     case = complete_intake(db, req.case_id, intake_data, icd11_flat)
@@ -359,11 +370,10 @@ async def get_session_status(case_id: str, db: Session = Depends(get_db)):
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    # Base frontend shape
+    # Base frontend shape (includes portal-mapped status, kgInsights, symptomSummary)
     result = get_case_for_frontend(db, case_id)
 
-    # Add status + doctor response info
-    result["status"] = case.status
+    # Add doctor response info (status comes from get_case_for_frontend)
     result["assignedDoctorId"] = case.assigned_doctor_id
 
     if case.responses:
@@ -682,25 +692,42 @@ def _generate_claude_response(
     emergency_flags: list[str],
     should_complete: bool,
     message_history: list[dict],
+    *,
+    use_knowledge_graph: bool = True,
 ) -> str:
-    """Call Claude to generate a conversational AI response with KG context."""
-    kg_parts = []
-    if activated_conditions:
-        cond_str = ", ".join(
-            f"{c['name']} (score: {c['score']})" for c in activated_conditions[:5]
+    """Call Claude to generate a conversational AI response; KG context optional."""
+    if use_knowledge_graph:
+        kg_parts = []
+        if activated_conditions:
+            cond_str = ", ".join(
+                f"{c['name']} (score: {c['score']})" for c in activated_conditions[:5]
+            )
+            kg_parts.append(f"Activated conditions: {cond_str}")
+        if body_systems:
+            kg_parts.append(f"Affected body systems: {', '.join(body_systems[:3])}")
+        if all_symptoms:
+            kg_parts.append(f"Symptoms reported so far: {', '.join(all_symptoms)}")
+        if suggested_questions:
+            q_str = "\n".join(
+                f"  - {q['question']} (relevance: {q.get('relevance_score', 0)})"
+                for q in suggested_questions[:3]
+            )
+            kg_parts.append(f"Suggested follow-up questions from knowledge graph:\n{q_str}")
+        kg_block = "\n".join(kg_parts) if kg_parts else "No graph context yet."
+        context_header = "KNOWLEDGE GRAPH CONTEXT (use this to guide your questions)"
+        followup_rule = (
+            "- Naturally incorporate the TOP suggested follow-up question from the "
+            "context above into your response.\n"
         )
-        kg_parts.append(f"Activated conditions: {cond_str}")
-    if body_systems:
-        kg_parts.append(f"Affected body systems: {', '.join(body_systems[:3])}")
-    if all_symptoms:
-        kg_parts.append(f"Symptoms reported so far: {', '.join(all_symptoms)}")
-    if suggested_questions:
-        q_str = "\n".join(
-            f"  - {q['question']} (relevance: {q.get('relevance_score', 0)})"
-            for q in suggested_questions[:3]
+    else:
+        kg_block = (
+            "Knowledge graph is off. Rely on the symptoms listed below and sound "
+            "general intake practice (one focused question at a time)."
         )
-        kg_parts.append(f"Suggested follow-up questions from knowledge graph:\n{q_str}")
-    kg_block = "\n".join(kg_parts) if kg_parts else "No graph context yet."
+        if all_symptoms:
+            kg_block += f"\nSymptoms reported so far: {', '.join(all_symptoms)}"
+        context_header = "INTAKE CONTEXT"
+        followup_rule = "- Ask one clear, relevant follow-up question based on what you know so far.\n"
 
     emergency_line = ""
     if is_emergency:
@@ -730,12 +757,11 @@ def _generate_claude_response(
         "- Do NOT interpret test results.\n"
         "- Always remind the patient that a qualified physician will review their case.\n"
         "- Be empathetic, patient, and use simple language.\n\n"
-        f"KNOWLEDGE GRAPH CONTEXT (use this to guide your questions):\n{kg_block}\n\n"
+        f"{context_header}:\n{kg_block}\n\n"
         "CONVERSATION RULES:\n"
         f"- Turn number: {turn_number}\n"
         "- Keep responses concise (2-3 sentences max).\n"
-        "- Naturally incorporate the TOP suggested question from the knowledge "
-        "graph into your response.\n"
+        f"{followup_rule}"
         "- Acknowledge what the patient has shared before asking the next question.\n"
         "- If this is turn 1, greet the patient warmly and ask about their main concern."
         f"{emergency_line}{completion_line}"
@@ -777,16 +803,17 @@ _stale_turn_tracker: dict[str, int] = {}
 async def ai_conversation_turn(req: AITurnRequest):
     """
     Process one conversation turn from the web simulator.
-    Uses the Knowledge Graph navigator to drive symptom collection,
-    and Claude for natural conversation.
+    Optionally uses the Knowledge Graph navigator when ENABLE_KNOWLEDGE_GRAPH is set;
+    otherwise keyword-based symptom extraction and Claude without graph context.
     """
-    # ── 1. Try to get the KG graph (non-fatal if unavailable) ──
+    # ── 1. Try to get the KG graph (non-fatal if disabled or unavailable) ──
     graph = None
-    try:
-        from routers.knowledge_graph import get_graph
-        graph = get_graph()
-    except Exception:
-        kg_logger.warning("[AI Turn] KG not available, using keyword-only mode")
+    if is_knowledge_graph_enabled():
+        try:
+            from routers.knowledge_graph import get_graph
+            graph = get_graph()
+        except Exception as exc:
+            kg_logger.warning("[AI Turn] KG not available, using keyword-only mode: %s", exc)
 
     # ── 2. Extract symptoms from user message ──
     detected_symptoms: list[str] = []
@@ -887,11 +914,14 @@ async def ai_conversation_turn(req: AITurnRequest):
 
     body_area_extracted = body_systems[0] if body_systems else None
 
-    # ── 8. Build message history for Claude ──
+    # ── 8. Build message history for Claude (browser sends `text`; API may send `content`) ──
     claude_history = []
     for msg in req.message_history:
-        if msg.get("role") in ("user", "assistant") and msg.get("content"):
-            claude_history.append({"role": msg["role"], "content": msg["content"]})
+        if msg.get("role") not in ("user", "assistant"):
+            continue
+        body = (msg.get("content") or msg.get("text") or "").strip()
+        if body:
+            claude_history.append({"role": msg["role"], "content": body})
 
     # ── 9. Generate AI response via Claude ──
     ai_message = _generate_claude_response(
@@ -905,6 +935,7 @@ async def ai_conversation_turn(req: AITurnRequest):
         emergency_flags=emergency_flags,
         should_complete=should_complete,
         message_history=claude_history,
+        use_knowledge_graph=graph is not None,
     )
 
     # ── 10. Generate clinical summary on completion ──
@@ -954,7 +985,105 @@ async def ai_conversation_turn(req: AITurnRequest):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. TEXT-TO-SPEECH — ElevenLabs TTS for voice responses
+# 8. BROWSER STT — Web Speech transcript segments in Redis (or in-memory fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+class BrowserSttPushRequest(BaseModel):
+    case_id: str
+    text: str
+    is_final: bool = True
+    lang: str = ""
+
+
+@router.post("/browser-stt/push")
+async def browser_stt_push(req: BrowserSttPushRequest):
+    """
+    Persist a segment from the browser's Web Speech API (final or interim rollup).
+    Keyed by case_id; use GET /caller/browser-stt/{case_id} to read merged transcript.
+    """
+    from services.browser_stt_store import push_segment
+
+    doc = push_segment(req.case_id, req.text, lang=req.lang, is_final=req.is_final)
+    return {
+        "case_id": req.case_id,
+        "segment_count": len(doc.get("segments", [])),
+        "full_text": doc.get("full_text", ""),
+    }
+
+
+@router.get("/browser-stt/{case_id}")
+async def browser_stt_get(case_id: str):
+    """Return merged browser STT transcript and segments for a case."""
+    from services.browser_stt_store import get_state
+
+    return get_state(case_id)
+
+
+@router.delete("/browser-stt/{case_id}")
+async def browser_stt_clear(case_id: str):
+    """Clear stored browser STT for a case (e.g. after successful submit)."""
+    from services.browser_stt_store import clear_state
+
+    clear_state(case_id)
+    return {"status": "cleared", "case_id": case_id}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. SPEECH-TO-TEXT — OpenAI Whisper (multilingual); not ElevenLabs
+# ─────────────────────────────────────────────────────────────────────────────
+@router.post("/stt")
+async def speech_to_text_whisper(
+    file: UploadFile = File(...),
+    language: str | None = Form(None),
+):
+    """
+    Transcribe uploaded audio with OpenAI Whisper (whisper-1).
+    Omit `language` for auto-detect; pass ISO-639-1 code (e.g. es, hi) to bias recognition.
+    """
+    if not OPENAI_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY not configured (required for Whisper STT)",
+        )
+
+    content = await file.read()
+    if len(content) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Audio file too large (max 25MB)")
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    import httpx
+
+    fname = file.filename or "audio.webm"
+    mime = file.content_type or "application/octet-stream"
+    files = {"file": (fname, content, mime)}
+    data: dict = {"model": "whisper-1"}
+    if language:
+        data["language"] = language
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            files=files,
+            data=data,
+        )
+
+    if resp.status_code != 200:
+        kg_logger.warning("[Whisper STT] OpenAI error: %s", resp.text[:500])
+        raise HTTPException(
+            status_code=502,
+            detail=f"Whisper transcription failed: {resp.text[:300]}",
+        )
+
+    body = resp.json()
+    return {
+        "text": body.get("text", ""),
+        "language": language,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. TEXT-TO-SPEECH — ElevenLabs (speech output only)
 # ─────────────────────────────────────────────────────────────────────────────
 class TTSRequest(BaseModel):
     text: str
@@ -962,7 +1091,7 @@ class TTSRequest(BaseModel):
 
 @router.post("/tts")
 async def text_to_speech(req: TTSRequest):
-    """Convert text to speech using ElevenLabs API."""
+    """Convert text to speech using ElevenLabs API (TTS only — STT is /caller/stt Whisper)."""
     import httpx
     from fastapi.responses import StreamingResponse
 
@@ -995,7 +1124,7 @@ async def text_to_speech(req: TTSRequest):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 9. IMAGE UPLOAD — camera capture from web simulator
+# 11. IMAGE UPLOAD — camera capture from web simulator
 # ─────────────────────────────────────────────────────────────────────────────
 @router.post("/upload-image")
 async def upload_image(file: UploadFile = File(...)):

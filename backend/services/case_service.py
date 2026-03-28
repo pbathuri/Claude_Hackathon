@@ -13,6 +13,10 @@ from models import (
 )
 from services.triage_service import triage_from_intake, get_base_score
 from services.priority_queue import compute_priority_score
+from schemas.intake import (
+    normalize_intake_dict,
+    build_symptom_summary_line,
+)
 
 
 # ── Urgency + Tier scoring for frontend contract ──
@@ -73,10 +77,14 @@ def complete_intake(db: Session, case_id: str, intake_data: dict,
     """
     Mark a case as intake_complete with structured data from Claude.
     Sets triage level, priority score, recommended specialty, and ICD-11 codes.
+
+    intake_data is normalized to the IntakeData schema and stored on Case.intake_data.
     """
     case = db.query(Case).filter_by(id=case_id).first()
     if not case:
         raise ValueError(f"Case {case_id} not found")
+
+    intake_data = normalize_intake_dict(intake_data)
 
     triage = triage_from_intake(intake_data)
 
@@ -97,10 +105,14 @@ def complete_intake(db: Session, case_id: str, intake_data: dict,
     case.priority_score = compute_frontend_priority(triage, country_tier)
     case.intake_completed_at = datetime.now(timezone.utc)
 
-    # Also create a symptom record
+    # Symptom record: full ordered list (primary + associated) for analytics / APIs
+    _main = intake_data.get("main_symptom") or ""
+    _assoc = list(intake_data.get("associated_symptoms") or [])
+    _all_symptoms = ([_main] if _main.strip() else []) + [s for s in _assoc if s]
+
     db.add(SymptomRecord(
         case_id=case_id,
-        symptoms_json=intake_data.get("associated_symptoms", []),
+        symptoms_json=_all_symptoms,
         icd11_codes=icd11_codes or [],
         severity=intake_data.get("severity"),
         transcript_text=intake_data.get("patient_summary"),
@@ -349,13 +361,85 @@ def get_case_with_details(db: Session, case_id: str) -> dict | None:
     }
 
 
-# ── Triage → frontend urgency mapping ──
+# ── Triage labels for REST submit / external APIs (semantic wording) ──
 TRIAGE_TO_URGENCY = {
     "RED": "Critical",
     "YELLOW": "High",
     "GREEN": "Low",
     "BLACK": "Expectant",
 }
+
+# ── Triage → doctor portal urgency (must match UrgencyBadge: High | Medium | Low) ──
+TRIAGE_TO_FRONTEND_URGENCY = {
+    "RED": "High",
+    "YELLOW": "Medium",
+    "GREEN": "Low",
+    "BLACK": "Low",
+}
+
+
+def _frontend_case_status(case_status: str | None) -> str:
+    """Map DB case.status to doctor-portal filter badges (pending | assigned | resolved +)."""
+    if not case_status:
+        return "pending"
+    if case_status == "in_progress":
+        return "assigned"
+    if case_status in ("open", "intake_complete"):
+        return "pending"
+    if case_status in ("closed",):
+        return "resolved"
+    return case_status
+
+
+def _kg_stored_to_portal(intake: dict) -> dict | None:
+    """Map Case.intake_data['kg_insights'] to doctor-portal KGNavigationResult shape."""
+    ki = intake.get("kg_insights")
+    if not isinstance(ki, dict):
+        return None
+
+    spec_list = ki.get("suggested_specialties") or []
+    default_spec = "General Medicine"
+    if spec_list and isinstance(spec_list[0], dict):
+        default_spec = spec_list[0].get("specialty", default_spec)
+    alt = intake.get("recommended_specialty")
+    if isinstance(alt, str) and alt and alt != "general":
+        default_spec = alt
+
+    conditions: list[dict] = []
+    for ac in ki.get("activated_conditions", []):
+        if not isinstance(ac, dict):
+            continue
+        name = ac.get("condition") or ac.get("name")
+        if not name:
+            continue
+        score = float(ac.get("activation_score", ac.get("score", 0)))
+        if score > 1.0:
+            score = min(score / 100.0, 1.0)
+        conditions.append({
+            "name": name,
+            "score": min(max(score, 0.0), 1.0),
+            "specialty": default_spec,
+        })
+
+    body_map: dict[str, list[str]] = {}
+    for sys in ki.get("body_systems", [])[:6]:
+        if isinstance(sys, dict):
+            n = sys.get("system") or sys.get("name")
+            if n:
+                body_map[n] = [intake.get("main_symptom", "")]
+        elif isinstance(sys, str):
+            body_map[sys] = []
+
+    if not conditions and ki.get("graph_confidence", 0) == 0:
+        return None
+
+    return {
+        "conditions": conditions[:8],
+        "recommendedSpecialty": default_spec,
+        "followUpQuestions": [],
+        "bodySystemMapping": body_map,
+        "graphPaths": [],
+    }
 
 
 def get_case_for_frontend(db: Session, case_id: str) -> dict | None:
@@ -379,24 +463,28 @@ def get_case_for_frontend(db: Session, case_id: str) -> dict | None:
         f"/uploads/{img.file_path}" for img in case.images if img.file_path
     ]
 
+    symptom_line = build_symptom_summary_line(intake) or case.chief_complaint or ""
+    submitted = case.intake_completed_at or case.opened_at
+    kg = _kg_stored_to_portal(intake)
+
     return {
         "caseId": case.id,
         "patientAlias": case.patient_alias or f"PT-{case.id[:4].upper()}",
         "country": country_perm.country_name if country_perm else case.country_code,
         "countryTier": country_perm.country_tier if country_perm else 3,
-        "urgency": TRIAGE_TO_URGENCY.get(case.triage_level, "Low"),
-        "symptomSummary": case.chief_complaint or intake.get("main_symptom", ""),
+        "urgency": TRIAGE_TO_FRONTEND_URGENCY.get(case.triage_level or "GREEN", "Low"),
+        "symptomSummary": symptom_line,
         "painScore": intake.get("severity", 0),
         "symptomDuration": intake.get("duration", ""),
         "bodyArea": case.body_area or intake.get("body_area", ""),
         "imageUrls": image_urls,
         "consentGiven": patient.consent_given if patient else False,
-        "submittedAt": (
-            case.opened_at.strftime("%Y-%m-%dT%H:%M:%SZ") if case.opened_at else None
-        ),
+        "submittedAt": submitted.strftime("%Y-%m-%dT%H:%M:%SZ") if submitted else None,
         "aiStructuredNotes": intake.get("patient_summary", ""),
         "redFlagIndicators": case.red_flag_indicators or [],
         "priorityScore": case.priority_score or 0,
+        "status": _frontend_case_status(case.status),
+        "kgInsights": kg,
     }
 
 
@@ -421,24 +509,28 @@ def get_all_cases_for_frontend(db: Session, status: str | None = None,
             f"/uploads/{img.file_path}" for img in case.images if img.file_path
         ]
 
+        symptom_line = build_symptom_summary_line(intake) or case.chief_complaint or ""
+        submitted = case.intake_completed_at or case.opened_at
+        kg = _kg_stored_to_portal(intake)
+
         results.append({
             "caseId": case.id,
             "patientAlias": case.patient_alias or f"PT-{case.id[:4].upper()}",
             "country": country_perm.country_name if country_perm else case.country_code,
             "countryTier": country_perm.country_tier if country_perm else 3,
-            "urgency": TRIAGE_TO_URGENCY.get(case.triage_level, "Low"),
-            "symptomSummary": case.chief_complaint or intake.get("main_symptom", ""),
+            "urgency": TRIAGE_TO_FRONTEND_URGENCY.get(case.triage_level or "GREEN", "Low"),
+            "symptomSummary": symptom_line,
             "painScore": intake.get("severity", 0),
             "symptomDuration": intake.get("duration", ""),
             "bodyArea": case.body_area or intake.get("body_area", ""),
             "imageUrls": image_urls,
             "consentGiven": patient.consent_given if patient else False,
-            "submittedAt": (
-                case.opened_at.strftime("%Y-%m-%dT%H:%M:%SZ") if case.opened_at else None
-            ),
+            "submittedAt": submitted.strftime("%Y-%m-%dT%H:%M:%SZ") if submitted else None,
             "aiStructuredNotes": intake.get("patient_summary", ""),
             "redFlagIndicators": case.red_flag_indicators or [],
             "priorityScore": case.priority_score or 0,
+            "status": _frontend_case_status(case.status),
+            "kgInsights": kg,
         })
 
     return results

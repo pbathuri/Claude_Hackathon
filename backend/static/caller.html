@@ -77,6 +77,7 @@ body{display:flex;flex-direction:column}
 .btn-mic{background:var(--cyan);color:#0a0e27}
 .btn-mic:hover{box-shadow:0 0 20px var(--cyan-glow)}
 .btn-mic.listening{background:var(--red);animation:micPulse 1s infinite}
+#btnWhisper.listening{background:rgba(255,23,68,.25);border-color:var(--red)!important;animation:micPulse 1s infinite}
 @keyframes micPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,23,68,.5)}50%{box-shadow:0 0 0 14px rgba(255,23,68,0)}}
 .btn-cam{background:var(--bg3);color:var(--txt2);border:1px solid rgba(255,255,255,.1)}
 .btn-cam:hover{border-color:var(--cyan);color:var(--cyan)}
@@ -170,11 +171,25 @@ body{display:flex;flex-direction:column}
     <span class="speaking-label">AI is speaking...</span>
   </div>
   <div class="transcript-preview" id="transcriptPreview"></div>
-  <div class="input-bar" id="inputBar">
+  <div class="input-bar" id="inputBar" style="flex-wrap:wrap">
+    <select class="country-select" id="speechLang" title="Speech language (browser STT)" style="width:auto;min-width:120px;font-size:13px">
+      <option value="en-US">EN</option>
+      <option value="es-ES">ES</option>
+      <option value="fr-FR">FR</option>
+      <option value="de-DE">DE</option>
+      <option value="hi-IN">HI</option>
+      <option value="pt-BR">PT</option>
+      <option value="ar-SA">AR</option>
+      <option value="zh-CN">ZH</option>
+      <option value="auto">Auto (Whisper)</option>
+    </select>
     <button class="btn-icon btn-cam" id="btnCam" onclick="openCamera()" title="Upload photo">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
     </button>
     <input class="text-input" id="textInput" placeholder="Type or press mic to speak..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendText()}">
+    <button class="btn-icon btn-cam" id="btnWhisper" onclick="toggleWhisperRecord()" title="Record → Whisper STT (multilingual)" style="border-color:rgba(0,212,255,.4)">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--cyan)" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+    </button>
     <button class="btn-icon btn-mic" id="btnMic" onclick="toggleMic()" title="Press to speak">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 0014 0h-2zm-5 9a7 7 0 007-7h-2a5 5 0 01-10 0H5a7 7 0 007 7zm0 2v2h-2v-2h2z"/></svg>
     </button>
@@ -205,6 +220,9 @@ let synth = window.speechSynthesis;
 let extractedSeverity = 5, extractedDuration = '', extractedBodyArea = '';
 let currentAudio = null;
 let isSpeaking = false;
+let whisperMediaRecorder = null;
+let whisperChunks = [];
+let whisperRecording = false;
 
 /* ── Audio beep ── */
 function beep(freq = 880, dur = 120) {
@@ -355,9 +373,37 @@ async function processAITurn(userMessage) {
   }
 }
 
+/* ── Browser STT → Redis (segments from Web Speech) ── */
+async function pushBrowserStt(text, lang) {
+  if (!caseId || !text || !text.trim()) return;
+  try {
+    await fetch(`${API}/caller/browser-stt/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        case_id: caseId,
+        text: text.trim(),
+        is_final: true,
+        lang: lang || '',
+      }),
+    });
+  } catch (e) { console.warn('[browser-stt]', e); }
+}
+
 /* ── Submit Case ── */
 async function submitCase(summary) {
   addMessage('system', 'Submitting your case to a physician...');
+  let transcript = summary || collectedSymptoms.join(', ');
+  try {
+    const st = await fetch(`${API}/caller/browser-stt/${caseId}`);
+    if (st.ok) {
+      const bt = await st.json();
+      if (bt.full_text && bt.full_text.trim()) {
+        transcript = [transcript, bt.full_text].filter(Boolean).join('\n\n');
+      }
+    }
+  } catch (e) { console.warn('browser-stt merge', e); }
+
   try {
     const res = await fetch(`${API}/caller/session/submit`, {
       method: 'POST',
@@ -366,13 +412,16 @@ async function submitCase(summary) {
         case_id: caseId,
         symptoms: collectedSymptoms,
         message_history: messageHistory,
-        transcript_summary: summary || collectedSymptoms.join(', '),
+        transcript_summary: transcript,
         severity: extractedSeverity,
         duration: extractedDuration,
         body_area: extractedBodyArea,
       }),
     });
     const data = await res.json();
+    try {
+      await fetch(`${API}/caller/browser-stt/${caseId}`, { method: 'DELETE' });
+    } catch (e) {}
     stopTimer();
     showSummary(data);
   } catch (e) {
@@ -401,14 +450,20 @@ function showSummary(data) {
   `;
 }
 
-/* ── Speech Recognition ── */
+/* ── Speech Recognition (browser STT) ── */
+function getSpeechLang() {
+  const v = document.getElementById('speechLang')?.value || 'en-US';
+  if (v === 'auto') return 'en-US';
+  return v;
+}
+
 function initSpeechRecognition() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return null;
   const r = new SR();
   r.continuous = false;
   r.interimResults = true;
-  r.lang = 'en-US';
+  r.lang = getSpeechLang();
 
   r.onresult = (e) => {
     let interim = '', final = '';
@@ -423,8 +478,10 @@ function initSpeechRecognition() {
     }
     if (final) {
       preview.classList.remove('active');
-      addMessage('user', final);
-      processAITurn(final);
+      const trimmed = final.trim();
+      pushBrowserStt(trimmed, r.lang);
+      addMessage('user', trimmed);
+      processAITurn(trimmed);
     }
   };
   r.onend = () => {
@@ -447,6 +504,7 @@ function toggleMic() {
     isListening = false;
     document.getElementById('btnMic').classList.remove('listening');
   } else {
+    recognition.lang = getSpeechLang();
     if (currentAudio) { currentAudio.pause(); currentAudio = null; }
     if (isSpeaking && synth) synth.cancel();
     isSpeaking = false;
@@ -454,6 +512,64 @@ function toggleMic() {
     recognition.start();
     isListening = true;
     document.getElementById('btnMic').classList.add('listening');
+  }
+}
+
+/* ── Whisper STT (recorded audio → server) ── */
+async function toggleWhisperRecord() {
+  const btn = document.getElementById('btnWhisper');
+  if (whisperRecording && whisperMediaRecorder && whisperMediaRecorder.state === 'recording') {
+    whisperMediaRecorder.stop();
+    return;
+  }
+  if (!caseId) { alert('Start a call first'); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : (MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '');
+    const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    whisperChunks = [];
+    mr.ondataavailable = (ev) => { if (ev.data && ev.data.size) whisperChunks.push(ev.data); };
+    mr.onstop = async () => {
+      whisperRecording = false;
+      btn.classList.remove('listening');
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(whisperChunks, { type: mr.mimeType || 'audio/webm' });
+      whisperMediaRecorder = null;
+      const fd = new FormData();
+      fd.append('file', blob, 'speech.webm');
+      const langSel = document.getElementById('speechLang')?.value;
+      if (langSel && langSel !== 'auto') {
+        const iso = langSel.split('-')[0];
+        if (iso) fd.append('language', iso);
+      }
+      try {
+        const res = await fetch(`${API}/caller/stt`, { method: 'POST', body: fd });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || res.statusText);
+        }
+        const data = await res.json();
+        const t = (data.text || '').trim();
+        if (t) {
+          await pushBrowserStt(t, langSel || '');
+          addMessage('user', t);
+          await processAITurn(t);
+        }
+      } catch (err) {
+        addMessage('system', 'Whisper STT failed: ' + (err.message || err) + ' (set OPENAI_API_KEY on server)');
+      }
+    };
+    whisperMediaRecorder = mr;
+    whisperRecording = true;
+    btn.classList.add('listening');
+    mr.start(250);
+    setTimeout(() => {
+      if (mr.state === 'recording') mr.stop();
+    }, 60000);
+  } catch (e) {
+    alert('Microphone not available: ' + e.message);
   }
 }
 

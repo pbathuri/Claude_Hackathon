@@ -19,6 +19,7 @@ from services.country_service import (
 from services.case_service import create_case, complete_intake, move_to_pending
 from services.triage_service import check_emergency_keywords
 from services.icd11_service import map_intake_to_icd11
+from config import is_knowledge_graph_enabled
 from routers.caller import _build_verbal_disclosure, _generate_fallback_message
 
 try:
@@ -151,11 +152,12 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
 
     # ── 1. Extract symptoms ──────────────────────────────────────────────
     graph = None
-    try:
-        from routers.knowledge_graph import get_graph
-        graph = get_graph()
-    except Exception:
-        pass
+    if is_knowledge_graph_enabled():
+        try:
+            from routers.knowledge_graph import get_graph
+            graph = get_graph()
+        except Exception:
+            pass
 
     detected_symptoms: list[str] = []
     if graph:
@@ -181,6 +183,8 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
 
     # ── 3. KG navigation ─────────────────────────────────────────────────
     suggested_questions: list[dict] = []
+    activated_conditions: list[dict] = []
+    body_systems: list[str] = []
     graph_confidence = 0.0
 
     if graph and all_symptoms:
@@ -198,6 +202,13 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
 
             suggested_questions = context.get("suggested_questions", [])[:3]
             graph_confidence = context.get("graph_confidence", 0.0)
+            activated_conditions = [
+                {"name": c["condition"], "score": round(c["activation_score"], 2)}
+                for c in context.get("activated_conditions", [])[:5]
+            ]
+            body_systems = [
+                s["system"] for s in context.get("activated_body_systems", [])
+            ]
         except Exception as exc:
             logger.warning("[Twilio] KG navigation failed (non-blocking): %s", exc)
 
@@ -219,18 +230,22 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
 
     # ── 6. Generate AI response ──────────────────────────────────────────
     ai_response = None
+    prior_history = session["message_history"][:-1]
 
     if _generate_claude_response is not None:
         try:
             ai_response = _generate_claude_response(
-                turn=turn,
+                turn_number=turn,
                 user_message=speech_result,
-                detected_symptoms=detected_symptoms,
                 all_symptoms=all_symptoms,
                 suggested_questions=suggested_questions,
+                activated_conditions=activated_conditions,
+                body_systems=body_systems,
                 is_emergency=is_emergency,
                 emergency_flags=emergency_flags,
                 should_complete=should_complete,
+                message_history=prior_history,
+                use_knowledge_graph=graph is not None,
             )
         except Exception as exc:
             logger.warning("[Twilio] Claude response failed, using fallback: %s", exc)
