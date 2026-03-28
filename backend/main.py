@@ -73,7 +73,12 @@ app = FastAPI(
 # CORS for doctor portal frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
+    allow_origins=[
+        "https://doctor-portal-flax.vercel.app",
+        "https://claude-hackathon-u86l.onrender.com",
+        "http://localhost:3001",
+        "http://localhost:8000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
