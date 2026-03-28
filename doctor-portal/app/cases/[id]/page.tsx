@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import { Case } from "@/types";
-import { getCase, assignDoctor, submitResponse, formatDate, timeAgo } from "@/lib/api";
+import { Case, KGNavigationResult } from "@/types";
+import { getCase, assignDoctor, submitResponse, backpropagateCase, formatDate, timeAgo } from "@/lib/api";
 import ComplianceBanner from "@/components/ComplianceBanner";
 import UrgencyBadge from "@/components/UrgencyBadge";
 import CountryIndicator from "@/components/CountryIndicator";
@@ -21,6 +21,7 @@ import {
   UserPlus,
   Send,
   CheckCircle,
+  AlertCircle,
 } from "lucide-react";
 
 export default function CaseDetailPage({ params }: { params: { id: string } }) {
@@ -28,33 +29,74 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
   const [loading, setLoading] = useState(true);
   const [assigning, setAssigning] = useState(false);
   const [assigned, setAssigned] = useState(false);
-  const [responseText, setResponseText] = useState("");
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const [guidanceText, setGuidanceText] = useState("");
+  const [diagnosis, setDiagnosis] = useState("");
+  const [isEmergencyReferral, setIsEmergencyReferral] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+  const kgSpecialtyRef = useRef<string>("General Medicine");
 
   useEffect(() => {
     getCase(params.id).then((data) => {
       setCaseData(data);
       setLoading(false);
-      if (data?.status === "assigned") setAssigned(true);
+      if (data?.status === "assigned" || data?.status === "resolved") setAssigned(true);
     });
   }, [params.id]);
 
   const handleAssign = async () => {
     if (!caseData) return;
     setAssigning(true);
-    await assignDoctor(caseData.caseId);
-    setAssigning(false);
-    setAssigned(true);
+    setAssignError(null);
+    try {
+      await assignDoctor(caseData.caseId);
+      setAssigned(true);
+    } catch (err) {
+      setAssignError(err instanceof Error ? err.message : "Failed to assign doctor");
+    } finally {
+      setAssigning(false);
+    }
   };
 
   const handleSubmitResponse = async () => {
-    if (!caseData || !responseText.trim()) return;
+    if (!caseData || !guidanceText.trim()) return;
     setSubmitting(true);
-    await submitResponse(caseData.caseId, responseText);
-    setSubmitting(false);
-    setSubmitted(true);
-    setResponseText("");
+    setSubmitError(null);
+    setSubmitSuccess(null);
+    try {
+      await submitResponse(caseData.caseId, {
+        doctor_id: "portal-doctor",
+        guidance_text: guidanceText,
+        is_emergency_referral: isEmergencyReferral,
+        compliance_acknowledged: true,
+      });
+
+      if (diagnosis.trim()) {
+        try {
+          await backpropagateCase(
+            caseData.caseId,
+            diagnosis,
+            kgSpecialtyRef.current
+          );
+        } catch {
+          // Backprop failure is non-critical — response was already submitted
+        }
+      }
+
+      setSubmitted(true);
+      setSubmitSuccess("Response submitted successfully" + (diagnosis.trim() ? " — KG updated" : ""));
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Failed to submit response");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleKGSpecialty = (specialty: string) => {
+    kgSpecialtyRef.current = specialty;
   };
 
   if (loading) return <LoadingSpinner text="Loading case details..." />;
@@ -118,29 +160,37 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
               </div>
 
               {/* Assign Button */}
-              <button
-                onClick={handleAssign}
-                disabled={assigned || assigning}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
-                  assigned
-                    ? "bg-triage-green/10 text-triage-green border border-triage-green/20 cursor-default"
-                    : "bg-who-blue text-white hover:bg-who-blue-dark shadow-sm"
-                }`}
-              >
-                {assigned ? (
-                  <>
-                    <CheckCircle className="w-4 h-4" />
-                    Assigned
-                  </>
-                ) : assigning ? (
-                  "Assigning..."
-                ) : (
-                  <>
-                    <UserPlus className="w-4 h-4" />
-                    Assign to Me
-                  </>
+              <div className="flex flex-col items-end gap-1">
+                <button
+                  onClick={handleAssign}
+                  disabled={assigned || assigning}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                    assigned
+                      ? "bg-triage-green/10 text-triage-green border border-triage-green/20 cursor-default"
+                      : "bg-who-blue text-white hover:bg-who-blue-dark shadow-sm"
+                  }`}
+                >
+                  {assigned ? (
+                    <>
+                      <CheckCircle className="w-4 h-4" />
+                      Assigned
+                    </>
+                  ) : assigning ? (
+                    "Assigning..."
+                  ) : (
+                    <>
+                      <UserPlus className="w-4 h-4" />
+                      Assign to Me
+                    </>
+                  )}
+                </button>
+                {assignError && (
+                  <span className="flex items-center gap-1 text-xs text-triage-red">
+                    <AlertCircle className="w-3 h-3" />
+                    {assignError}
+                  </span>
                 )}
-              </button>
+              </div>
             </div>
 
             {/* Priority Score */}
@@ -223,23 +273,67 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
           {/* Doctor Response */}
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
             <h2 className="font-heading font-semibold text-gray-900 mb-3">Doctor Response</h2>
+
+            {submitSuccess && (
+              <div className="flex items-center gap-2 text-triage-green bg-green-50 rounded-lg p-4 border border-green-100 mb-4">
+                <CheckCircle className="w-5 h-5 shrink-0" />
+                <span className="text-sm font-medium">{submitSuccess}</span>
+              </div>
+            )}
+
+            {submitError && (
+              <div className="flex items-center gap-2 text-triage-red bg-red-50 rounded-lg p-4 border border-red-100 mb-4">
+                <AlertCircle className="w-5 h-5 shrink-0" />
+                <span className="text-sm font-medium">{submitError}</span>
+              </div>
+            )}
+
             {submitted ? (
-              <div className="flex items-center gap-2 text-triage-green bg-green-50 rounded-lg p-4 border border-green-100">
-                <CheckCircle className="w-5 h-5" />
-                <span className="text-sm font-medium">Response submitted successfully</span>
+              <div className="text-center py-6 text-gray-400">
+                <CheckCircle className="w-8 h-8 mx-auto mb-2 text-triage-green" />
+                <p className="text-sm font-medium text-gray-600">Response has been submitted for this case</p>
               </div>
             ) : (
-              <div className="space-y-3">
-                <textarea
-                  value={responseText}
-                  onChange={(e) => setResponseText(e.target.value)}
-                  placeholder="Enter your clinical assessment and recommendations..."
-                  rows={4}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-who-blue/20 focus:border-who-blue resize-none"
-                />
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+                    Clinical Guidance
+                  </label>
+                  <textarea
+                    value={guidanceText}
+                    onChange={(e) => setGuidanceText(e.target.value)}
+                    placeholder="Enter your clinical assessment and recommendations..."
+                    rows={4}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-who-blue/20 focus:border-who-blue resize-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+                    Diagnosis (for KG feedback loop)
+                  </label>
+                  <input
+                    type="text"
+                    value={diagnosis}
+                    onChange={(e) => setDiagnosis(e.target.value)}
+                    placeholder="e.g. Acute Appendicitis, Dengue Fever..."
+                    className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-who-blue/20 focus:border-who-blue"
+                  />
+                </div>
+
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isEmergencyReferral}
+                    onChange={(e) => setIsEmergencyReferral(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-300 text-triage-red focus:ring-triage-red"
+                  />
+                  <span className="text-sm text-gray-700 font-medium">Emergency Referral Required</span>
+                </label>
+
                 <button
                   onClick={handleSubmitResponse}
-                  disabled={submitting || !responseText.trim()}
+                  disabled={submitting || !guidanceText.trim()}
                   className="flex items-center gap-2 px-4 py-2 bg-who-blue text-white rounded-lg text-sm font-semibold hover:bg-who-blue-dark transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Send className="w-4 h-4" />
@@ -253,7 +347,11 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
         {/* KG Insights Panel - 1/3 */}
         <div className="xl:col-span-1">
           <div className="sticky top-6">
-            <KGInsightsPanel caseData={caseData} />
+            <KGInsightsPanel
+              caseData={caseData}
+              kgInsights={caseData.kgInsights}
+              onSpecialtyResolved={handleKGSpecialty}
+            />
           </div>
         </div>
       </div>

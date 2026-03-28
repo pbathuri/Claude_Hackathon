@@ -16,6 +16,23 @@ export interface Case {
   priorityScore: number;
   status?: "pending" | "assigned" | "resolved";
   assignedDoctor?: string;
+  kgInsights?: KGNavigationResult;
+}
+
+export interface Doctor {
+  id: string;
+  full_name: string;
+  specialization: string;
+  country_code: string;
+  languages: string[];
+  availability: boolean;
+  verified: boolean;
+}
+
+export interface BackpropResult {
+  success: boolean;
+  updates_applied?: number;
+  message?: string;
 }
 
 export interface KGNavigationResult {

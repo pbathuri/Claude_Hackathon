@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import { Case } from "@/types";
 import { getCases, timeAgo } from "@/lib/api";
@@ -9,10 +9,30 @@ import CountryIndicator from "@/components/CountryIndicator";
 import PriorityBar from "@/components/PriorityBar";
 import RedFlagBadge from "@/components/RedFlagBadge";
 import LoadingSpinner from "@/components/LoadingSpinner";
-import { Search, SlidersHorizontal, ArrowUpDown, ChevronRight } from "lucide-react";
+import { Search, SlidersHorizontal, ArrowUpDown, ChevronRight, Bell } from "lucide-react";
+
+const REFRESH_INTERVAL = 5000;
 
 type SortKey = "priority" | "submitted" | "pain";
 type SortDir = "asc" | "desc";
+
+function playNotificationSound() {
+  try {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.3);
+  } catch {
+    // Web Audio not available
+  }
+}
 
 export default function CasesPage() {
   const [cases, setCases] = useState<Case[]>([]);
@@ -23,13 +43,39 @@ export default function CasesPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("priority");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [secondsAgo, setSecondsAgo] = useState(0);
+  const [toast, setToast] = useState<string | null>(null);
+  const prevCountRef = useRef<number | null>(null);
+
+  const fetchCases = useCallback(async () => {
+    const data = await getCases();
+    if (prevCountRef.current !== null && data.length > prevCountRef.current) {
+      playNotificationSound();
+      setToast(`${data.length - prevCountRef.current} new case(s) received`);
+      setTimeout(() => setToast(null), 3000);
+    }
+    prevCountRef.current = data.length;
+    setCases(data);
+    setLastUpdated(new Date());
+    setLoading(false);
+  }, []);
 
   useEffect(() => {
-    getCases().then((data) => {
-      setCases(data);
-      setLoading(false);
-    });
-  }, []);
+    fetchCases();
+    const dataInterval = setInterval(fetchCases, REFRESH_INTERVAL);
+    const tickInterval = setInterval(() => {
+      setSecondsAgo((prev) => prev + 1);
+    }, 1000);
+    return () => {
+      clearInterval(dataInterval);
+      clearInterval(tickInterval);
+    };
+  }, [fetchCases]);
+
+  useEffect(() => {
+    setSecondsAgo(0);
+  }, [lastUpdated]);
 
   const countries = useMemo(
     () => [...new Set(cases.map((c) => c.country))].sort(),
@@ -84,9 +130,22 @@ export default function CasesPage() {
 
   return (
     <div className="space-y-6">
+      {/* Toast notification */}
+      {toast && (
+        <div className="fixed top-4 right-4 z-50 animate-in slide-in-from-top-2 flex items-center gap-2 bg-who-blue text-white text-sm font-semibold px-4 py-2.5 rounded-lg shadow-lg">
+          <Bell className="w-4 h-4" />
+          {toast}
+        </div>
+      )}
+
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-heading font-bold text-gray-900">Case Queue</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-heading font-bold text-gray-900">Case Queue</h1>
+          <span className="text-xs text-gray-400">
+            Last updated {secondsAgo}s ago
+          </span>
+        </div>
         <p className="text-sm text-gray-500 mt-1">
           {cases.length} total cases &middot; {cases.filter((c) => c.status === "pending").length} pending review
         </p>

@@ -12,7 +12,10 @@ Integration flow:
   4. GET  /caller/session/{id}      → check case status (frontend contract shape)
   5. GET  /caller/disclosure/{cc}   → get verbal disclosure script for a country
 """
-from fastapi import APIRouter, Depends, HTTPException
+import os
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -31,6 +34,17 @@ from services.icd11_service import map_intake_to_icd11, search_icd11
 
 import logging
 kg_logger = logging.getLogger(__name__)
+
+_anthropic_client = None
+
+
+def _get_anthropic():
+    global _anthropic_client
+    if _anthropic_client is None:
+        import anthropic
+        _anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    return _anthropic_client
+
 
 router = APIRouter(prefix="/caller", tags=["caller-api"])
 
@@ -558,3 +572,439 @@ def _build_capability_card(perm: CountryPermission | None) -> dict:
             "emergency services immediately."
         ),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. AI CONVERSATION TURN — web simulator drives symptom collection via KG
+# ─────────────────────────────────────────────────────────────────────────────
+class AITurnRequest(BaseModel):
+    case_id: str
+    user_message: str
+    turn_number: int = 1
+    collected_symptoms: list[str] = []
+    language: str = "en"
+    message_history: list[dict] = []
+
+
+class AITurnResponse(BaseModel):
+    ai_message: str
+    detected_symptoms: list[str]
+    all_symptoms_so_far: list[str]
+    suggested_questions: list[dict] = []
+    is_emergency: bool = False
+    emergency_flags: list[str] = []
+    should_complete: bool = False
+    turn_number: int
+    activated_conditions: list[dict] = []
+    body_systems: list[str] = []
+    severity_extracted: int | None = None
+    duration_extracted: str | None = None
+    body_area_extracted: str | None = None
+    transcript_summary: str | None = None
+
+
+def _extract_symptoms_from_text(text: str, graph) -> list[str]:
+    """Fuzzy-match words/phrases in user text against KG symptom nodes."""
+    from knowledge_graph.graph_engine import NodeType
+    text_lower = text.lower()
+    found = []
+    for node in graph.get_nodes_by_type(NodeType.SYMPTOM):
+        if node.name.lower() in text_lower:
+            found.append(node.name)
+    return found
+
+
+def _generate_fallback_message(
+    turn: int,
+    new_symptoms: list[str],
+    all_symptoms: list[str],
+    suggested_questions: list[dict],
+    is_emergency: bool,
+    emergency_flags: list[str],
+    should_complete: bool,
+) -> str:
+    """Rule-based fallback when Claude API is unavailable."""
+    if is_emergency:
+        flags_str = ", ".join(emergency_flags) if emergency_flags else "critical symptoms"
+        return (
+            f"I'm detecting potential emergency indicators: {flags_str}. "
+            "Please call emergency services (112 / 911) immediately. "
+            "Do not wait — your safety is the priority. "
+            "If someone is with you, ask them to call while we continue."
+        )
+
+    if should_complete:
+        symptom_str = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
+        return (
+            f"Thank you for sharing this information. I've recorded: {symptom_str}. "
+            "Your case is now being submitted to a qualified physician who will "
+            "review everything and get back to you shortly. "
+            "If your condition worsens, please seek emergency care immediately."
+        )
+
+    next_q = ""
+    if suggested_questions:
+        next_q = f" {suggested_questions[0]['question']}"
+
+    if turn == 1:
+        if new_symptoms:
+            symptom_str = ", ".join(new_symptoms)
+            return (
+                f"Thank you for calling. I understand you're experiencing {symptom_str}. "
+                f"I'd like to ask a few questions to better understand your situation.{next_q}"
+            )
+        return (
+            "Thank you for calling. I'm here to help assess your symptoms. "
+            f"Could you describe what you're experiencing?{next_q}"
+        )
+
+    if turn <= 4:
+        if new_symptoms:
+            new_str = ", ".join(new_symptoms)
+            return f"I see, you also have {new_str}. That's helpful to know.{next_q}"
+        return f"Thank you.{next_q}" if next_q else "Could you tell me more about how you're feeling?"
+
+    symptom_str = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
+    return (
+        f"Thank you for all this information. I've noted: {symptom_str}. "
+        "I'm now preparing your case for a physician to review."
+    )
+
+
+def _generate_claude_response(
+    turn_number: int,
+    user_message: str,
+    all_symptoms: list[str],
+    suggested_questions: list[dict],
+    activated_conditions: list[dict],
+    body_systems: list[str],
+    is_emergency: bool,
+    emergency_flags: list[str],
+    should_complete: bool,
+    message_history: list[dict],
+) -> str:
+    """Call Claude to generate a conversational AI response with KG context."""
+    kg_parts = []
+    if activated_conditions:
+        cond_str = ", ".join(
+            f"{c['name']} (score: {c['score']})" for c in activated_conditions[:5]
+        )
+        kg_parts.append(f"Activated conditions: {cond_str}")
+    if body_systems:
+        kg_parts.append(f"Affected body systems: {', '.join(body_systems[:3])}")
+    if all_symptoms:
+        kg_parts.append(f"Symptoms reported so far: {', '.join(all_symptoms)}")
+    if suggested_questions:
+        q_str = "\n".join(
+            f"  - {q['question']} (relevance: {q.get('relevance_score', 0)})"
+            for q in suggested_questions[:3]
+        )
+        kg_parts.append(f"Suggested follow-up questions from knowledge graph:\n{q_str}")
+    kg_block = "\n".join(kg_parts) if kg_parts else "No graph context yet."
+
+    emergency_line = ""
+    if is_emergency:
+        flags_str = ", ".join(emergency_flags) if emergency_flags else "critical symptoms"
+        emergency_line = (
+            f"\nEMERGENCY DETECTED: {flags_str}. "
+            "Tell the patient to call emergency services (112/911) IMMEDIATELY. "
+            "Their safety is the absolute priority. Be direct and urgent."
+        )
+
+    completion_line = ""
+    if should_complete and not is_emergency:
+        sym_str = ", ".join(all_symptoms) if all_symptoms else "the reported symptoms"
+        completion_line = (
+            f"\nCONVERSATION COMPLETE: Summarize the symptoms collected ({sym_str}) "
+            "and inform the patient their case is being submitted to a qualified "
+            "physician for review. Thank them for their patience."
+        )
+
+    system_prompt = (
+        "You are a WHO-aligned health assistant conducting a symptom intake "
+        "conversation over the phone. Your role is to gather symptom information "
+        "to prepare a case for a qualified physician.\n\n"
+        "CRITICAL GUARDRAILS:\n"
+        "- You are NOT a doctor. Do NOT diagnose conditions.\n"
+        "- Do NOT prescribe treatments or medications.\n"
+        "- Do NOT interpret test results.\n"
+        "- Always remind the patient that a qualified physician will review their case.\n"
+        "- Be empathetic, patient, and use simple language.\n\n"
+        f"KNOWLEDGE GRAPH CONTEXT (use this to guide your questions):\n{kg_block}\n\n"
+        "CONVERSATION RULES:\n"
+        f"- Turn number: {turn_number}\n"
+        "- Keep responses concise (2-3 sentences max).\n"
+        "- Naturally incorporate the TOP suggested question from the knowledge "
+        "graph into your response.\n"
+        "- Acknowledge what the patient has shared before asking the next question.\n"
+        "- If this is turn 1, greet the patient warmly and ask about their main concern."
+        f"{emergency_line}{completion_line}"
+    )
+
+    messages = []
+    for msg in message_history:
+        if msg.get("role") in ("user", "assistant") and msg.get("content"):
+            messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        client = _get_anthropic()
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            system=system_prompt,
+            messages=messages,
+        )
+        return response.content[0].text
+    except Exception as exc:
+        kg_logger.warning("[Claude] API call failed, falling back to rule-based: %s", exc)
+        return _generate_fallback_message(
+            turn=turn_number,
+            new_symptoms=[],
+            all_symptoms=all_symptoms,
+            suggested_questions=suggested_questions,
+            is_emergency=is_emergency,
+            emergency_flags=emergency_flags,
+            should_complete=should_complete,
+        )
+
+
+# Tracks turns with no new symptoms per case for auto-completion
+_stale_turn_tracker: dict[str, int] = {}
+
+
+@router.post("/ai-turn", response_model=AITurnResponse)
+async def ai_conversation_turn(req: AITurnRequest):
+    """
+    Process one conversation turn from the web simulator.
+    Uses the Knowledge Graph navigator to drive symptom collection,
+    and Claude for natural conversation.
+    """
+    # ── 1. Try to get the KG graph (non-fatal if unavailable) ──
+    graph = None
+    try:
+        from routers.knowledge_graph import get_graph
+        graph = get_graph()
+    except Exception:
+        kg_logger.warning("[AI Turn] KG not available, using keyword-only mode")
+
+    # ── 2. Extract symptoms from user message ──
+    detected_symptoms: list[str] = []
+    if graph:
+        detected_symptoms = _extract_symptoms_from_text(req.user_message, graph)
+    else:
+        common = [
+            "fever", "headache", "cough", "nausea", "vomiting", "diarrhea",
+            "fatigue", "dizziness", "chest pain", "abdominal pain", "rash",
+            "sore throat", "body aches", "chills", "shortness of breath",
+            "back pain", "joint pain", "loss of appetite", "weight loss",
+        ]
+        text_lower = req.user_message.lower()
+        detected_symptoms = [s for s in common if s in text_lower]
+
+    # ── 3. Merge with previously collected symptoms ──
+    all_symptoms = list(dict.fromkeys(req.collected_symptoms + detected_symptoms))
+
+    # ── 4. KG navigation ──
+    suggested_questions: list[dict] = []
+    activated_conditions: list[dict] = []
+    body_systems: list[str] = []
+    graph_confidence = 0.0
+
+    if graph and all_symptoms:
+        try:
+            from routers.knowledge_graph import _navigator_sessions
+            from knowledge_graph.navigator import ConversationNavigator
+
+            if req.case_id not in _navigator_sessions:
+                _navigator_sessions[req.case_id] = ConversationNavigator(
+                    graph, case_id=req.case_id
+                )
+            nav = _navigator_sessions[req.case_id]
+            context = nav.process_symptoms(all_symptoms)
+
+            suggested_questions = context.get("suggested_questions", [])[:3]
+            activated_conditions = [
+                {"name": c["condition"], "score": round(c["activation_score"], 2)}
+                for c in context.get("activated_conditions", [])[:5]
+            ]
+            body_systems = [
+                s["system"] for s in context.get("activated_body_systems", [])
+            ]
+            graph_confidence = context.get("graph_confidence", 0.0)
+        except Exception as exc:
+            kg_logger.warning("[AI Turn] KG navigation failed (non-blocking): %s", exc)
+
+    # ── 5. Emergency check ──
+    is_emergency = check_emergency_keywords(req.user_message)
+    emergency_flags: list[str] = []
+    if is_emergency:
+        from services.triage_service import EMERGENCY_KEYWORDS
+        lower = req.user_message.lower()
+        emergency_flags = [kw.title() for kw in EMERGENCY_KEYWORDS if kw in lower]
+
+    # ── 6. Determine completion (smarter heuristics) ──
+    new_count = len([s for s in detected_symptoms if s not in req.collected_symptoms])
+    if new_count == 0:
+        _stale_turn_tracker[req.case_id] = _stale_turn_tracker.get(req.case_id, 0) + 1
+    else:
+        _stale_turn_tracker[req.case_id] = 0
+
+    stale_turns = _stale_turn_tracker.get(req.case_id, 0)
+    should_complete = (
+        is_emergency
+        or len(all_symptoms) >= 5
+        or graph_confidence > 0.7
+        or req.turn_number >= 6
+        or stale_turns >= 2
+    )
+
+    # ── 7. Extract severity, duration, body area from user message ──
+    severity_extracted = None
+    sev_match = re.search(
+        r'(\d{1,2})\s*(?:out of|/)\s*10|pain\s*level\s*(\d{1,2})|severity\s*(\d{1,2})',
+        req.user_message, re.IGNORECASE,
+    )
+    if sev_match:
+        raw = next((g for g in sev_match.groups() if g is not None), None)
+        if raw and 1 <= int(raw) <= 10:
+            severity_extracted = int(raw)
+
+    duration_extracted = None
+    dur_match = re.search(
+        r'(\d+\s*(?:days?|weeks?|months?|hours?|years?))',
+        req.user_message, re.IGNORECASE,
+    )
+    if dur_match:
+        duration_extracted = dur_match.group(1)
+    else:
+        since_match = re.search(
+            r'since\s+(yesterday|last\s+\w+)',
+            req.user_message, re.IGNORECASE,
+        )
+        if since_match:
+            duration_extracted = f"since {since_match.group(1)}"
+
+    body_area_extracted = body_systems[0] if body_systems else None
+
+    # ── 8. Build message history for Claude ──
+    claude_history = []
+    for msg in req.message_history:
+        if msg.get("role") in ("user", "assistant") and msg.get("content"):
+            claude_history.append({"role": msg["role"], "content": msg["content"]})
+
+    # ── 9. Generate AI response via Claude ──
+    ai_message = _generate_claude_response(
+        turn_number=req.turn_number,
+        user_message=req.user_message,
+        all_symptoms=all_symptoms,
+        suggested_questions=suggested_questions,
+        activated_conditions=activated_conditions,
+        body_systems=body_systems,
+        is_emergency=is_emergency,
+        emergency_flags=emergency_flags,
+        should_complete=should_complete,
+        message_history=claude_history,
+    )
+
+    # ── 10. Generate clinical summary on completion ──
+    transcript_summary = None
+    if should_complete and all_symptoms:
+        try:
+            client = _get_anthropic()
+            summary_resp = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=100,
+                system=(
+                    "You are a clinical note writer. Produce a single concise "
+                    "sentence summarizing the patient's presenting symptoms for "
+                    "a physician handoff. No diagnosis."
+                ),
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Symptoms: {', '.join(all_symptoms)}. "
+                        f"Duration: {duration_extracted or 'unknown'}. "
+                        f"Severity: {severity_extracted or 'unknown'}/10. "
+                        f"Body area: {body_area_extracted or 'unknown'}."
+                    ),
+                }],
+            )
+            transcript_summary = summary_resp.content[0].text
+        except Exception as exc:
+            kg_logger.warning("[Claude] Summary generation failed: %s", exc)
+            transcript_summary = f"Patient reports: {', '.join(all_symptoms)}."
+
+    return AITurnResponse(
+        ai_message=ai_message,
+        detected_symptoms=detected_symptoms,
+        all_symptoms_so_far=all_symptoms,
+        suggested_questions=suggested_questions,
+        is_emergency=is_emergency,
+        emergency_flags=emergency_flags,
+        should_complete=should_complete,
+        turn_number=req.turn_number + 1,
+        activated_conditions=activated_conditions,
+        body_systems=body_systems,
+        severity_extracted=severity_extracted,
+        duration_extracted=duration_extracted,
+        body_area_extracted=body_area_extracted,
+        transcript_summary=transcript_summary,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. TEXT-TO-SPEECH — ElevenLabs TTS for voice responses
+# ─────────────────────────────────────────────────────────────────────────────
+class TTSRequest(BaseModel):
+    text: str
+
+
+@router.post("/tts")
+async def text_to_speech(req: TTSRequest):
+    """Convert text to speech using ElevenLabs API."""
+    import httpx
+    from fastapi.responses import StreamingResponse
+
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+
+    if not api_key:
+        raise HTTPException(status_code=500, detail="ELEVENLABS_API_KEY not configured")
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream",
+            headers={"xi-api-key": api_key, "Content-Type": "application/json"},
+            json={
+                "text": req.text,
+                "model_id": os.environ.get("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
+                "voice_settings": {"stability": 0.75, "similarity_boost": 0.75},
+            },
+            timeout=15.0,
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail="TTS service error")
+
+    return StreamingResponse(
+        iter([resp.content]),
+        media_type="audio/mpeg",
+        headers={"Content-Disposition": "inline"},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. IMAGE UPLOAD — camera capture from web simulator
+# ─────────────────────────────────────────────────────────────────────────────
+@router.post("/upload-image")
+async def upload_image(file: UploadFile = File(...)):
+    import os
+    import uuid as _uuid
+    os.makedirs("static/uploads", exist_ok=True)
+    ext = file.filename.split(".")[-1] if file.filename else "jpg"
+    name = f"{_uuid.uuid4().hex[:12]}.{ext}"
+    path = f"static/uploads/{name}"
+    with open(path, "wb") as f:
+        f.write(await file.read())
+    return {"url": f"/static/uploads/{name}", "filename": name}
