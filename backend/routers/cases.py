@@ -229,3 +229,51 @@ def get_audit_trail(case_id: str, db: Session = Depends(get_db)):
         }
         for e in entries
     ]
+
+
+@router.get("/{case_id}/fhir", tags=["interoperability"])
+def get_case_fhir_bundle(case_id: str, db: Session = Depends(get_db)):
+    """
+    Export a case as a FHIR R4 Bundle (Phase 06 Interoperability).
+    Returns Patient, Encounter, Conditions, Severity Observation, Consent,
+    and Practitioner resources for interoperability with hospital systems.
+    """
+    from models import Patient as PatientModel, DoctorProfile, SymptomRecord
+    from adapters.fhir_mapper import build_case_bundle
+
+    case = db.query(Case).filter_by(id=case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    patient = db.query(PatientModel).filter_by(id=case.patient_id).first()
+    symptoms = []
+    symptom_rec = db.query(SymptomRecord).filter_by(case_id=case_id).first()
+    if symptom_rec and symptom_rec.symptoms_json:
+        symptoms = symptom_rec.symptoms_json
+
+    doctor_name = ""
+    doctor_specialty = ""
+    if case.assigned_doctor_id:
+        doc = db.query(DoctorProfile).filter_by(id=case.assigned_doctor_id).first()
+        if doc:
+            doctor_name = doc.full_name
+            doctor_specialty = doc.specialization
+
+    intake = case.intake_data or {}
+    severity = intake.get("severity", 5)
+
+    return build_case_bundle(
+        case_id=case.id,
+        patient_id=case.patient_id,
+        status=case.status,
+        triage_level=case.triage_level or "GREEN",
+        symptoms=symptoms,
+        severity=severity,
+        icd11_codes=case.icd11_codes,
+        country_code=case.country_code,
+        chief_complaint=case.chief_complaint or "",
+        consent_given=patient.consent_given if patient else True,
+        doctor_id=case.assigned_doctor_id,
+        doctor_name=doctor_name,
+        doctor_specialty=doctor_specialty,
+    )

@@ -10,6 +10,9 @@ import {
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TIMEOUT_MS = 5000;
 
+let _isUsingMockData = false;
+export function isUsingMockData(): boolean { return _isUsingMockData; }
+
 async function fetchWithFallback<T>(
   url: string,
   fallback: T,
@@ -30,6 +33,7 @@ async function fetchWithFallback<T>(
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch {
+    _isUsingMockData = true;
     return fallback;
   }
 }
@@ -79,8 +83,11 @@ export async function getDoctors(): Promise<Doctor[]> {
 
 // --- Mutations (strict — throw on failure so UI can display errors) ---
 
-export async function assignDoctor(caseId: string): Promise<{ success: boolean }> {
-  return fetchStrict(`${API_BASE}/cases/${caseId}/assign`, { method: "POST" });
+export async function assignDoctor(caseId: string, doctorId: string = "portal-doctor"): Promise<{ success: boolean }> {
+  return fetchStrict(`${API_BASE}/cases/${caseId}/assign`, {
+    method: "POST",
+    body: JSON.stringify({ doctor_id: doctorId }),
+  });
 }
 
 export async function submitResponse(
@@ -121,9 +128,9 @@ export async function backpropagateCase(
 
 export async function navigateKG(symptoms: string[]): Promise<KGNavigationResult> {
   return fetchWithFallback(
-    `${API_BASE}/kg/query`,
+    `${API_BASE}/kg/navigate`,
     mockKGNavigation,
-    { method: "POST", body: JSON.stringify({ symptoms }) }
+    { method: "POST", body: JSON.stringify({ case_id: "portal-query", symptoms }) }
   );
 }
 

@@ -3,6 +3,12 @@ Twilio Voice Webhook router.
 Handles inbound phone calls via Twilio, collecting symptoms through
 multi-turn voice conversation using <Gather> speech recognition.
 
+Language support:
+  - Detects language from first speech input via Whisper language detection
+  - Configures Twilio <Gather> with correct language code
+  - AI responses translated to caller's language before being spoken
+  - All clinical processing runs in English behind the scenes
+
 Flow: Twilio POST /twilio/voice → verbal disclosure + first Gather
       → POST /twilio/gather (loop) → submit case or hangup
 """
@@ -19,23 +25,37 @@ from services.country_service import (
 from services.case_service import create_case, complete_intake, move_to_pending
 from services.triage_service import check_emergency_keywords
 from services.icd11_service import map_intake_to_icd11
-from config import is_knowledge_graph_enabled
-from routers.caller import _build_verbal_disclosure, _generate_fallback_message
+from services.language_service import (
+    detect_language,
+    get_language_config,
+    translate_to_english,
+    translate_from_english,
+    translate_disclosure,
+    build_emergency_message,
+    get_emergency_number,
+)
+from config import (
+    is_knowledge_graph_enabled,
+    CONVERSATION_MODEL, CONVERSATION_MAX_TOKENS,
+    MIN_SYMPTOMS_FOR_COMPLETE, MAX_TURNS_BEFORE_COMPLETE,
+    GRAPH_CONFIDENCE_THRESHOLD,
+)
+from routers.caller import (
+    _build_verbal_disclosure,
+    _generate_fallback_message,
+    _extract_symptoms_from_text,
+)
 
 try:
     from routers.caller import _generate_claude_response
 except ImportError:
     _generate_claude_response = None
 
-try:
-    from routers.caller import _generate_fallback_message
-except ImportError:
-    _generate_fallback_message = None
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/twilio", tags=["twilio-voice"])
 
+# Per-call session state
 _call_sessions: dict[str, dict] = {}
 
 
@@ -54,6 +74,18 @@ def _escape_xml(text: str) -> str:
 def _twiml(body: str) -> Response:
     xml = f'<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n{body}\n</Response>'
     return Response(content=xml, media_type="application/xml")
+
+
+def _truncate_for_tts(text: str, max_chars: int = 1500) -> str:
+    """Truncate text to stay within Twilio Say limits."""
+    if len(text) <= max_chars:
+        return text
+    # Cut at last sentence boundary before limit
+    truncated = text[:max_chars]
+    last_period = truncated.rfind(". ")
+    if last_period > max_chars // 2:
+        return truncated[:last_period + 1]
+    return truncated
 
 
 # ─── POST /twilio/voice — incoming call webhook ────────────────────────────
@@ -108,21 +140,28 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)):
         "turn": 1,
         "collected_symptoms": [],
         "message_history": [],
+        "ai_messages": [],  # for anti-repetition
         "country_code": country_code,
+        "language": "en",   # will be updated after first speech
     }
 
     logger.info("[Twilio] Incoming call %s from %s — case %s", call_sid, country_code, case.id)
 
-    safe_disc = _escape_xml(shortened)
+    # Default language config (English); will switch after first utterance
+    lang_cfg = get_language_config("en")
+    voice = lang_cfg["twilio_voice"]
+    gather_lang = lang_cfg["twilio_lang"]
+
+    safe_disc = _escape_xml(_truncate_for_tts(shortened))
     return _twiml(
-        f'  <Say voice="Polly.Joanna">Welcome to the WHO Health Access Service. {safe_disc}</Say>\n'
+        f'  <Say voice="{voice}">Welcome to the WHO Health Access Service. {safe_disc}</Say>\n'
         '  <Pause length="1"/>\n'
-        '  <Gather input="speech" action="/twilio/gather" method="POST"'
-        ' speechTimeout="auto" language="en-US">\n'
-        '    <Say voice="Polly.Joanna">Please describe your main symptoms.'
+        f'  <Gather input="speech" action="/twilio/gather" method="POST"'
+        f' speechTimeout="auto" language="{gather_lang}">\n'
+        f'    <Say voice="{voice}">Please describe your main symptoms.'
         " What brings you to call today?</Say>\n"
         "  </Gather>\n"
-        "  <Say voice=\"Polly.Joanna\">I didn't catch that. Please call back when you're ready.</Say>"
+        f'  <Say voice="{voice}">I didn\'t catch that. Please call back when you\'re ready.</Say>'
     )
 
 
@@ -133,6 +172,8 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
     """
     Twilio <Gather> callback — receives transcribed speech and drives
     the symptom-collection conversation turn by turn.
+
+    On first turn: detects language and switches conversation accordingly.
     """
     form = await request.form()
     speech_result = form.get("SpeechResult", "")
@@ -148,9 +189,28 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
 
     turn = session["turn"]
     collected = session["collected_symptoms"]
-    session["message_history"].append({"role": "user", "content": speech_result})
+    country_code = session.get("country_code", "")
 
-    # ── 1. Extract symptoms ──────────────────────────────────────────────
+    # ── Language detection on first turn ──
+    if turn == 1 and speech_result:
+        detected_lang = detect_language(speech_result)
+        if detected_lang != "en":
+            session["language"] = detected_lang
+            logger.info("[Twilio] Language detected: %s for call %s", detected_lang, call_sid)
+
+    user_lang = session.get("language", "en")
+    lang_cfg = get_language_config(user_lang)
+    voice = lang_cfg["twilio_voice"]
+    gather_lang = lang_cfg["twilio_lang"]
+
+    # Translate user speech to English for processing
+    english_speech = speech_result
+    if user_lang != "en" and speech_result:
+        english_speech = translate_to_english(speech_result, user_lang)
+
+    session["message_history"].append({"role": "user", "content": english_speech})
+
+    # ── 1. Extract symptoms (from English text) ──
     graph = None
     if is_knowledge_graph_enabled():
         try:
@@ -161,11 +221,7 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
 
     detected_symptoms: list[str] = []
     if graph:
-        try:
-            from routers.caller import _extract_symptoms_from_text
-            detected_symptoms = _extract_symptoms_from_text(speech_result, graph)
-        except ImportError:
-            pass
+        detected_symptoms = _extract_symptoms_from_text(english_speech, graph)
 
     if not detected_symptoms:
         _COMMON_SYMPTOMS = [
@@ -174,7 +230,7 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
             "sore throat", "body aches", "chills", "shortness of breath",
             "back pain", "joint pain", "loss of appetite", "weight loss",
         ]
-        text_lower = speech_result.lower()
+        text_lower = english_speech.lower()
         detected_symptoms = [s for s in _COMMON_SYMPTOMS if s in text_lower]
 
     # ── 2. Merge symptoms ────────────────────────────────────────────────
@@ -212,23 +268,23 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
         except Exception as exc:
             logger.warning("[Twilio] KG navigation failed (non-blocking): %s", exc)
 
-    # ── 4. Emergency check ───────────────────────────────────────────────
-    is_emergency = check_emergency_keywords(speech_result)
+    # ── 4. Emergency check (on English text) ──
+    is_emergency = check_emergency_keywords(english_speech)
     emergency_flags: list[str] = []
     if is_emergency:
         from services.triage_service import EMERGENCY_KEYWORDS
-        lower = speech_result.lower()
+        lower = english_speech.lower()
         emergency_flags = [kw.title() for kw in EMERGENCY_KEYWORDS if kw in lower]
 
     # ── 5. Completion criteria ───────────────────────────────────────────
     should_complete = (
-        len(all_symptoms) >= 5
-        or graph_confidence > 0.7
-        or turn >= 6
+        len(all_symptoms) >= MIN_SYMPTOMS_FOR_COMPLETE
+        or graph_confidence > GRAPH_CONFIDENCE_THRESHOLD
+        or turn >= MAX_TURNS_BEFORE_COMPLETE
         or is_emergency
     )
 
-    # ── 6. Generate AI response ──────────────────────────────────────────
+    # ── 6. Generate AI response (in English) ─────────────────────────────
     ai_response = None
     prior_history = session["message_history"][:-1]
 
@@ -236,7 +292,7 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
         try:
             ai_response = _generate_claude_response(
                 turn_number=turn,
-                user_message=speech_result,
+                user_message=english_speech,
                 all_symptoms=all_symptoms,
                 suggested_questions=suggested_questions,
                 activated_conditions=activated_conditions,
@@ -246,23 +302,11 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
                 should_complete=should_complete,
                 message_history=prior_history,
                 use_knowledge_graph=graph is not None,
+                country_code=country_code,
+                previous_ai_messages=session.get("ai_messages", []),
             )
         except Exception as exc:
             logger.warning("[Twilio] Claude response failed, using fallback: %s", exc)
-
-    if ai_response is None and _generate_fallback_message is not None:
-        try:
-            ai_response = _generate_fallback_message(
-                turn=turn,
-                new_symptoms=detected_symptoms,
-                all_symptoms=all_symptoms,
-                suggested_questions=suggested_questions,
-                is_emergency=is_emergency,
-                emergency_flags=emergency_flags,
-                should_complete=should_complete,
-            )
-        except Exception:
-            pass
 
     if ai_response is None:
         ai_response = _generate_fallback_message(
@@ -275,10 +319,18 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
             should_complete=should_complete,
         )
 
+    # Track for anti-repetition
+    session.setdefault("ai_messages", []).append(ai_response)
+
+    # Translate response to user's language
+    spoken_response = ai_response
+    if user_lang != "en":
+        spoken_response = translate_from_english(ai_response, user_lang)
+
     session["message_history"].append({"role": "assistant", "content": ai_response})
     session["turn"] = turn + 1
 
-    safe_resp = _escape_xml(ai_response)
+    safe_resp = _escape_xml(_truncate_for_tts(spoken_response))
 
     # ── 7. Emergency → advise caller + hangup ────────────────────────────
     if is_emergency:
@@ -288,11 +340,11 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
             logger.error("[Twilio] Emergency case submission failed: %s", exc)
         _call_sessions.pop(call_sid, None)
 
-        flags_str = ", ".join(emergency_flags) if emergency_flags else "critical symptoms"
+        emerg = get_emergency_number(country_code)
+        emerg_msg = build_emergency_message(country_code, user_lang, emergency_flags)
+        safe_emerg = _escape_xml(_truncate_for_tts(emerg_msg))
         return _twiml(
-            f'  <Say voice="Polly.Joanna">I am detecting potential emergency indicators: '
-            f"{_escape_xml(flags_str)}. Please hang up and call emergency services "
-            f"immediately. Your local emergency number is 911 or 112.</Say>\n"
+            f'  <Say voice="{voice}">{safe_emerg}</Say>\n'
             f"  <Hangup/>"
         )
 
@@ -307,23 +359,42 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
         symptom_str = _escape_xml(
             ", ".join(all_symptoms) if all_symptoms else "your symptoms"
         )
+        # Translate completion notice
+        completion_msg = (
+            f"Your case has been submitted. A physician will review "
+            f"{', '.join(all_symptoms) if all_symptoms else 'your symptoms'} "
+            "and respond shortly. If your condition worsens, please seek emergency care. Goodbye."
+        )
+        if user_lang != "en":
+            completion_msg = translate_from_english(completion_msg, user_lang)
+        safe_completion = _escape_xml(_truncate_for_tts(completion_msg))
+
         return _twiml(
-            f'  <Say voice="Polly.Joanna">{safe_resp}</Say>\n'
+            f'  <Say voice="{voice}">{safe_resp}</Say>\n'
             '  <Pause length="1"/>\n'
-            f'  <Say voice="Polly.Joanna">Your case has been submitted. A physician will review '
-            f"{symptom_str} and respond shortly. "
-            "If your condition worsens, please seek emergency care. Goodbye.</Say>\n"
+            f'  <Say voice="{voice}">{safe_completion}</Say>\n'
             "  <Hangup/>"
         )
 
     # ── 9. Continue → respond + gather next turn ─────────────────────────
+    # Translate "Go ahead" prompt
+    listen_prompt = "Go ahead, I'm listening."
+    if user_lang != "en":
+        listen_prompt = translate_from_english(listen_prompt, user_lang)
+    safe_listen = _escape_xml(listen_prompt)
+
+    no_input_msg = "I didn't catch that. Please call back when you're ready."
+    if user_lang != "en":
+        no_input_msg = translate_from_english(no_input_msg, user_lang)
+    safe_noinput = _escape_xml(no_input_msg)
+
     return _twiml(
-        f'  <Say voice="Polly.Joanna">{safe_resp}</Say>\n'
-        '  <Gather input="speech" action="/twilio/gather" method="POST"'
-        ' speechTimeout="auto" language="en-US">\n'
-        '    <Say voice="Polly.Joanna">Go ahead, I\'m listening.</Say>\n'
+        f'  <Say voice="{voice}">{safe_resp}</Say>\n'
+        f'  <Gather input="speech" action="/twilio/gather" method="POST"'
+        f' speechTimeout="auto" language="{gather_lang}">\n'
+        f'    <Say voice="{voice}">{safe_listen}</Say>\n'
         "  </Gather>\n"
-        "  <Say voice=\"Polly.Joanna\">I didn't catch that. Please call back when you're ready.</Say>"
+        f'  <Say voice="{voice}">{safe_noinput}</Say>'
     )
 
 
@@ -367,17 +438,41 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
         "patient_summary": transcript[:500],
     }
 
-    icd11_results = await map_intake_to_icd11(intake_data)
-    icd11_flat = [
-        code
-        for item in icd11_results
-        for code in item.get("icd11_codes", [])
-    ]
+    # ICD-11 mapping (non-blocking)
+    try:
+        icd11_results = await map_intake_to_icd11(intake_data)
+        icd11_flat = [
+            code
+            for item in icd11_results
+            for code in item.get("icd11_codes", [])
+        ]
+    except Exception as exc:
+        logger.warning("[Twilio] ICD-11 mapping failed (non-blocking): %s", exc)
+        icd11_flat = []
+
+    # KG enrichment for voice calls too
+    if is_knowledge_graph_enabled() and symptoms:
+        try:
+            from routers.knowledge_graph import _graph, _navigator_sessions
+            if _graph:
+                from knowledge_graph.navigator import ConversationNavigator
+                nav = ConversationNavigator(_graph, case_id=case_id)
+                kg_context = nav.process_symptoms(symptoms)
+                if kg_context.get("suggested_specialties"):
+                    intake_data["recommended_specialty"] = kg_context["suggested_specialties"][0]["specialty"]
+                intake_data["kg_insights"] = {
+                    "activated_conditions": kg_context.get("activated_conditions", [])[:5],
+                    "suggested_specialties": kg_context.get("suggested_specialties", [])[:3],
+                    "graph_confidence": kg_context.get("graph_confidence", 0),
+                }
+                _navigator_sessions[case_id] = nav
+        except Exception as exc:
+            logger.warning("[Twilio] KG enrichment failed (non-blocking): %s", exc)
 
     complete_intake(db, case_id, intake_data, icd11_flat)
     move_to_pending(db, case_id)
 
     logger.info(
-        "[Twilio] Case %s submitted — %d symptoms, triage=%s",
-        case_id, len(symptoms), triage_level,
+        "[Twilio] Case %s submitted — %d symptoms, triage=%s, lang=%s",
+        case_id, len(symptoms), triage_level, session.get("language", "en"),
     )

@@ -103,3 +103,65 @@ def check_emergency_keywords(text: str) -> bool:
     """Check if text contains emergency keywords warranting RED triage."""
     lower = text.lower()
     return any(kw in lower for kw in EMERGENCY_KEYWORDS)
+
+
+def build_triage_breakdown(
+    triage_level: str,
+    severity: int = 5,
+    red_flags: list[str] | None = None,
+    symptom_count: int = 0,
+    duration: str = "",
+    kg_confidence: float = 0.0,
+    country_tier: int = 3,
+) -> dict:
+    """
+    Build an explainable triage score breakdown (Phase 01).
+    Returns a dict matching TriageScoreBreakdown schema.
+    Every component is individually auditable.
+    """
+    base = float(TRIAGE_BASE_SCORES.get(triage_level, 10))
+    severity_score = max(0.0, (severity - 3) * 5.0)  # 1-3 → 0, 4→5, 7→20, 10→35
+    red_flag_score = len(red_flags or []) * 15.0       # Each red flag adds 15 points
+    symptom_count_score = min(20.0, symptom_count * 3.0)  # Up to 20 pts
+
+    # Duration: longer durations get slightly lower urgency (chronic vs acute)
+    duration_score = 0.0
+    if duration:
+        lower_dur = duration.lower()
+        if any(w in lower_dur for w in ["hour", "minute"]):
+            duration_score = 10.0  # Acute onset
+        elif any(w in lower_dur for w in ["day", "1 day", "2 day"]):
+            duration_score = 5.0
+        elif any(w in lower_dur for w in ["week"]):
+            duration_score = 2.0
+        # months/years → 0 (chronic, lower urgency)
+
+    kg_score = kg_confidence * 10.0  # 0-10 pts
+    tier_score = {1: 10, 2: 20, 3: 30, 4: 40}.get(country_tier, 30)
+
+    total = base + severity_score + red_flag_score + symptom_count_score + duration_score + kg_score + tier_score
+
+    # Build explanation
+    parts = [f"Triage {triage_level} (base={base})"]
+    if severity_score > 0:
+        parts.append(f"severity {severity}/10 (+{severity_score:.0f})")
+    if red_flag_score > 0:
+        parts.append(f"{len(red_flags or [])} red flags (+{red_flag_score:.0f})")
+    if symptom_count_score > 0:
+        parts.append(f"{symptom_count} symptoms (+{symptom_count_score:.0f})")
+    if duration_score > 0:
+        parts.append(f"duration '{duration}' (+{duration_score:.0f})")
+    parts.append(f"Tier {country_tier} (+{tier_score:.0f})")
+
+    return {
+        "triage_level": triage_level,
+        "base_score": base,
+        "severity_score": severity_score,
+        "red_flag_score": red_flag_score,
+        "symptom_count_score": symptom_count_score,
+        "duration_score": duration_score,
+        "kg_confidence_score": kg_score,
+        "country_tier_score": tier_score,
+        "total_priority": round(total, 1),
+        "explanation": " | ".join(parts),
+    }

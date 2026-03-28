@@ -38,6 +38,68 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Whisper-Ollama Voice API", lifespan=lifespan)
 
 
+def _extract_clinical_facts(history: list[dict]) -> tuple[int, str, str]:
+    """
+    Extract severity, duration, and body_area from conversation history.
+    Returns (severity: int, duration: str, body_area: str) with best-effort extraction.
+    Falls back to conservative defaults rather than hardcoded mid-range.
+    """
+    import re
+
+    all_patient_text = " ".join(
+        m.get("content", "") for m in history if m.get("role") in ("user", "human")
+    ).lower()
+
+    # Severity: look for "N out of 10", "pain N", severity-implying keywords
+    severity = 5  # conservative default
+    sev_match = re.search(r"(\d+)\s*(?:out of|/)\s*10", all_patient_text)
+    if sev_match:
+        severity = min(10, max(1, int(sev_match.group(1))))
+    elif any(kw in all_patient_text for kw in ["severe", "worst", "unbearable", "excruciating", "10"]):
+        severity = 8
+    elif any(kw in all_patient_text for kw in ["moderate", "quite bad", "pretty bad"]):
+        severity = 6
+    elif any(kw in all_patient_text for kw in ["mild", "slight", "little", "minor"]):
+        severity = 3
+
+    # Duration: "for N days/weeks/hours"
+    duration = ""
+    dur_patterns = [
+        r"(?:for|since|past|last)\s+(\d+\s+(?:day|week|month|hour|year)s?)",
+        r"(\d+\s+(?:day|week|month|hour|year)s?)\s+(?:ago|now)",
+        r"(?:started|began)\s+(\d+\s+(?:day|week|month|hour|year)s?\s+ago)",
+        r"(?:for|since|past|last)\s+(a\s+(?:day|week|month|hour|year|few days|couple days))",
+    ]
+    for pattern in dur_patterns:
+        m = re.search(pattern, all_patient_text)
+        if m:
+            duration = m.group(1).strip()
+            break
+
+    # Body area: keyword mapping
+    body_area = ""
+    area_map = {
+        "head": ["headache", "head", "migraine", "skull", "temple"],
+        "chest": ["chest", "heart", "rib", "lung"],
+        "abdomen": ["stomach", "abdomen", "belly", "abdominal", "tummy", "gut"],
+        "throat": ["throat", "tonsil", "neck"],
+        "back": ["back", "spine", "lower back"],
+        "whole body": ["whole body", "everywhere", "all over", "body aches", "chills", "fever"],
+        "limbs": ["arm", "leg", "knee", "ankle", "wrist", "elbow", "shoulder", "hip"],
+        "skin": ["skin", "rash", "lesion", "wound", "itch"],
+    }
+    for area, keywords in area_map.items():
+        if any(kw in all_patient_text for kw in keywords):
+            body_area = area
+            break
+
+    logger.info(
+        "[FactExtract] severity=%d | duration='%s' | body_area='%s'",
+        severity, duration, body_area,
+    )
+    return severity, duration, body_area
+
+
 # ── Audio normalisation ───────────────────────────────────────────────────────
 async def _normalise_audio(raw: bytes) -> bytes:
     """
@@ -231,15 +293,18 @@ async def chat(
     # ── Backend integration: submit completed conversation ───────────
     if response_body["conversation_complete"] and case_id:
         try:
+            # Extract severity, duration, body_area from conversation history
+            _severity, _duration, _body_area = _extract_clinical_facts(history)
+
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.post(f"{backend}/caller/session/submit", json={
                     "case_id":              case_id,
                     "symptoms":             response_body["symptoms"],
                     "message_history":      history,
                     "transcript_summary":   reply_text,
-                    "severity":             5,
-                    "duration":             "",
-                    "body_area":            "",
+                    "severity":             _severity,
+                    "duration":             _duration,
+                    "body_area":            _body_area,
                 })
             if r.status_code == 200:
                 backend_result = r.json()

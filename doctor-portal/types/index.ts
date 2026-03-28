@@ -1,3 +1,9 @@
+export type CaseStatusType = 
+  | 'created' | 'active_intake' | 'intake_complete' 
+  | 'pending_review' | 'assigned' | 'in_review'
+  | 'responded' | 'followup_pending' | 'followup_replied'
+  | 'escalated' | 'expired' | 'closed' | 'insufficient_information';
+
 export interface Case {
   caseId: string;
   patientAlias: string;
@@ -14,7 +20,7 @@ export interface Case {
   aiStructuredNotes: string;
   redFlagIndicators: string[];
   priorityScore: number;
-  status?: "pending" | "assigned" | "resolved";
+  status?: CaseStatusType;
   assignedDoctor?: string;
   kgInsights?: KGNavigationResult;
 }
@@ -25,7 +31,7 @@ export interface Doctor {
   specialization: string;
   country_code: string;
   languages: string[];
-  availability: boolean;
+  availability: string;  // "online" | "offline" | "busy"
   verified: boolean;
 }
 

@@ -28,4 +28,14 @@ def get_db():
 
 
 def init_db():
+    # Import extended models so create_all creates their tables
+    try:
+        from domain.models_ext import (  # noqa: F401
+            ConversationTurnRecord,
+            ConsentEventRecord,
+            ClinicalExtractionRecord,
+            OutboxJob,
+        )
+    except ImportError:
+        pass
     Base.metadata.create_all(bind=engine)

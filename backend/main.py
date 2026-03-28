@@ -30,6 +30,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Feature flags
+DEMO_MODE = os.environ.get("DEMO_MODE", "1") == "1"
+if DEMO_MODE:
+    logger.warning("DEMO_MODE is enabled — authentication is bypassed")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -90,6 +95,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from observability.middleware import RequestIDMiddleware
+app.add_middleware(RequestIDMiddleware)
 
 # Register routers
 app.include_router(intake.router)

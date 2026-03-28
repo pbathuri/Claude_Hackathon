@@ -67,8 +67,12 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
     setSubmitError(null);
     setSubmitSuccess(null);
     try {
+      // TODO(Phase 02): Replace with actual authenticated doctor ID from session
+      const doctorId = typeof window !== "undefined"
+        ? localStorage.getItem("doctor_id") || "portal-doctor"
+        : "portal-doctor";
       await submitResponse(caseData.caseId, {
-        doctor_id: "portal-doctor",
+        doctor_id: doctorId,
         guidance_text: guidanceText,
         is_emergency_referral: isEmergencyReferral,
         compliance_acknowledged: true,

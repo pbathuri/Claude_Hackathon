@@ -1,0 +1,42 @@
+{
+  "cases": [
+    {
+      "id": "golden-ng-malaria",
+      "country": "NG",
+      "symptoms": ["fever", "headache", "chills", "body aches"],
+      "expected_top_conditions": ["Malaria", "Dengue Fever"],
+      "expected_triage": "YELLOW",
+      "expected_specialty": "Infectious Disease",
+      "severity": 7,
+      "duration": "3 days"
+    },
+    {
+      "id": "golden-ke-cholera",
+      "country": "KE",
+      "symptoms": ["diarrhea", "vomiting", "dehydration"],
+      "expected_top_conditions": ["Cholera", "Gastroenteritis"],
+      "expected_triage": "YELLOW",
+      "expected_specialty": "Infectious Disease",
+      "severity": 8,
+      "duration": "2 days"
+    },
+    {
+      "id": "golden-in-emergency",
+      "country": "IN",
+      "symptoms": ["chest pain", "shortness of breath"],
+      "expected_triage": "RED",
+      "expected_emergency": true,
+      "severity": 9,
+      "duration": "30 minutes"
+    },
+    {
+      "id": "golden-ph-depression",
+      "country": "PH",
+      "symptoms": ["depression", "insomnia", "fatigue", "loss of appetite"],
+      "expected_top_conditions": ["Major Depressive Disorder"],
+      "expected_specialty": "Psychiatry",
+      "severity": 6,
+      "duration": "2 weeks"
+    }
+  ]
+}

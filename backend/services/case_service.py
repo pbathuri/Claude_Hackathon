@@ -17,6 +17,7 @@ from schemas.intake import (
     normalize_intake_dict,
     build_symptom_summary_line,
 )
+from domain.enums import CaseStatus, validate_transition, TriageLevel, UrgencyDisplay
 
 
 # ── Urgency + Tier scoring for frontend contract ──
@@ -49,6 +50,47 @@ def _generate_patient_alias(patient_id: str) -> str:
     """Generate a privacy-safe alias like PT-2048 from patient UUID."""
     numeric = int(patient_id.replace("-", "")[:8], 16) % 10000
     return f"PT-{numeric:04d}"
+
+
+def transition_case_status(
+    db: Session,
+    case_id: str,
+    new_status: str,
+    reason: str = "",
+    actor_id: str = "system",
+) -> Case:
+    """Validate and apply a case status transition using the canonical FSM.
+
+    Raises ValueError for missing cases or illegal transitions.
+    Writes an audit-log entry on every successful change.
+    """
+    case = db.query(Case).filter_by(id=case_id).first()
+    if not case:
+        raise ValueError(f"Case {case_id} not found")
+
+    valid_statuses = {s.value for s in CaseStatus}
+    current = CaseStatus(case.status) if case.status in valid_statuses else CaseStatus.CREATED
+    target = CaseStatus(new_status)
+
+    if not validate_transition(current, target):
+        raise ValueError(
+            f"Invalid transition: {current.value} -> {target.value}"
+        )
+
+    old_status = case.status
+    case.status = target.value
+    db.commit()
+
+    _audit(db, "status_change", "case", case_id, actor_id=actor_id,
+           actor_type="system", details={
+               "old_status": old_status,
+               "new_status": target.value,
+               "reason": reason,
+           })
+    db.commit()
+
+    db.refresh(case)
+    return case
 
 
 def create_case(db: Session, patient_id: str, country_code: str,

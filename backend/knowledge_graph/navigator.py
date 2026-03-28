@@ -45,11 +45,22 @@ class ConversationNavigator:
         Process new symptoms reported by the patient.
         Returns navigation context for the LLM: suggested questions,
         activated conditions, relevant body systems.
+
+        Handles: duplicates, unknown symptoms, empty input.
         """
         new_symptom_ids = []
+        # Track unknown symptoms for fallback question generation
+        self._unknown_symptoms: list[str] = getattr(self, "_unknown_symptoms", [])
 
         for name in symptom_names:
             name_lower = name.lower().strip()
+            if not name_lower:
+                continue
+
+            # Deduplicate: skip if already reported (by name)
+            if name_lower in [s.lower() for s in self.reported_symptoms]:
+                continue
+
             # Try exact match first, then fuzzy
             node = self.graph.find_node(name_lower, NodeType.SYMPTOM)
             if not node:
@@ -57,25 +68,32 @@ class ConversationNavigator:
                 node = matches[0] if matches else None
 
             if node:
-                new_symptom_ids.append(node.id)
-                self.reported_symptoms.append(node.name)
-                self._symptom_node_ids.append(node.id)
-                self.trace.visited_nodes.append(node.id)
-                self.trace.activated_symptoms.append(node.name)
+                # Avoid duplicate node IDs
+                if node.id not in self._symptom_node_ids:
+                    new_symptom_ids.append(node.id)
+                    self._symptom_node_ids.append(node.id)
+                    self.trace.visited_nodes.append(node.id)
+                if node.name not in self.reported_symptoms:
+                    self.reported_symptoms.append(node.name)
+                    self.trace.activated_symptoms.append(node.name)
                 logger.info("[Navigator] Activated symptom: %s (%s)", node.name, node.id)
             else:
-                # Unknown symptom — the graph will learn about it later
+                # Track unknown symptoms for context — graph learns later
+                if name_lower not in self._unknown_symptoms:
+                    self._unknown_symptoms.append(name_lower)
                 logger.info("[Navigator] Unknown symptom: '%s' — not in graph", name_lower)
 
-        # Record co-occurrences for branching leaf syndrome
-        for i, sid_a in enumerate(self._symptom_node_ids):
-            for sid_b in self._symptom_node_ids[i + 1:]:
-                self.graph.record_co_occurrence(sid_a, sid_b)
+        # Record co-occurrences for branching leaf syndrome (only new pairs)
+        if new_symptom_ids:
+            for i, sid_a in enumerate(self._symptom_node_ids):
+                for sid_b in self._symptom_node_ids[i + 1:]:
+                    self.graph.record_co_occurrence(sid_a, sid_b)
 
         # Spread activation from all symptom nodes
-        self.activated_nodes = self.graph.spread_activation(
-            self._symptom_node_ids, depth=3, decay_factor=0.6
-        )
+        if self._symptom_node_ids:
+            self.activated_nodes = self.graph.spread_activation(
+                self._symptom_node_ids, depth=3, decay_factor=0.6
+            )
 
         return self._build_navigation_context()
 
@@ -101,14 +119,16 @@ class ConversationNavigator:
 
     def _build_navigation_context(self) -> dict:
         """Build the full navigation context for the LLM."""
+        unknown = getattr(self, "_unknown_symptoms", [])
         return {
             "reported_symptoms": self.reported_symptoms,
+            "unknown_symptoms": unknown,
             "suggested_questions": self.get_suggested_questions(top_n=5),
             "activated_conditions": self.get_activated_conditions(top_n=8),
             "activated_body_systems": self.get_activated_body_systems(),
             "suggested_specialties": self.get_suggested_specialties(top_n=3),
             "risk_factors_to_check": self.get_relevant_risk_factors(top_n=3),
-            "conversation_depth": len(self.reported_symptoms),
+            "conversation_depth": len(self.reported_symptoms) + len(unknown),
             "graph_confidence": self._compute_confidence(),
         }
 
@@ -168,10 +188,12 @@ class ConversationNavigator:
                 question_scores.append((q_node, score))
 
         # E. coli tumble: occasionally boost a random low-scoring question
-        if question_scores and random.random() < self.graph.config.exploration_rate:
+        if len(question_scores) > 1 and random.random() < self.graph.config.exploration_rate:
             idx = random.randint(0, len(question_scores) - 1)
             node, old_score = question_scores[idx]
-            question_scores[idx] = (node, old_score + max(s for _, s in question_scores) * 0.3)
+            max_score = max(s for _, s in question_scores)
+            if max_score > 0:
+                question_scores[idx] = (node, old_score + max_score * 0.3)
 
         question_scores.sort(key=lambda x: x[1], reverse=True)
 

@@ -25,6 +25,7 @@ The E. coli chemotaxis layer adds biased random exploration:
 import json
 import math
 import logging
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -188,6 +189,9 @@ class MedicalKnowledgeGraph:
         self.config = config or PhysarumConfig()
         self.persist_path = persist_path
 
+        # Thread safety: protects all mutable graph state
+        self._lock = threading.RLock()
+
         # Core storage
         self.nodes: dict[str, GraphNode] = {}
         self.edges: dict[tuple[str, str], GraphEdge] = {}  # (source, target) → edge
@@ -348,7 +352,12 @@ class MedicalKnowledgeGraph:
         """
         Send flow along a path through the graph (Physarum tube reinforcement).
         Each edge in the path gets its conductivity increased proportional to flow.
+        Thread-safe: acquires graph lock for all mutations.
         """
+        with self._lock:
+            self._send_flow_locked(path, flow_amount)
+
+    def _send_flow_locked(self, path: list[str], flow_amount: float) -> None:
         for i in range(len(path) - 1):
             key = (path[i], path[i + 1])
             edge = self.edges.get(key)
@@ -381,42 +390,43 @@ class MedicalKnowledgeGraph:
                 node.last_visited = time.time()
 
     def reinforce_edge(self, source_id: str, target_id: str, amount: float = 1.0) -> None:
-        """Directly reinforce a single edge."""
-        edge = self.edges.get((source_id, target_id))
-        if edge:
-            edge.conductivity = min(
-                self.config.max_conductivity,
-                edge.conductivity + self.config.reinforcement_rate * amount,
-            )
-            edge.reinforcement_count += 1
-            edge.last_reinforced = time.time()
+        """Directly reinforce a single edge (thread-safe)."""
+        with self._lock:
+            edge = self.edges.get((source_id, target_id))
+            if edge:
+                edge.conductivity = min(
+                    self.config.max_conductivity,
+                    edge.conductivity + self.config.reinforcement_rate * amount,
+                )
+                edge.reinforcement_count += 1
+                edge.last_reinforced = time.time()
 
     def apply_global_decay(self) -> int:
         """
         Physarum decay: all edges lose conductivity over time.
         Unused edges weaken, well-used edges barely notice.
-        Returns number of edges that hit minimum conductivity.
+        Returns number of edges that hit minimum conductivity. Thread-safe.
         """
-        decayed_to_min = 0
-        now = time.time()
+        with self._lock:
+            decayed_to_min = 0
+            now = time.time()
 
-        for edge in self.edges.values():
-            old_σ = edge.conductivity
-            # Decay proportional to time since last reinforcement
-            edge.conductivity = max(
-                self.config.min_conductivity,
-                edge.conductivity * (1 - self.config.decay_rate),
-            )
-            edge.flow *= 0.5  # flow also decays
-            edge.decay_count += 1
+            for edge in self.edges.values():
+                # Decay proportional to time since last reinforcement
+                edge.conductivity = max(
+                    self.config.min_conductivity,
+                    edge.conductivity * (1 - self.config.decay_rate),
+                )
+                edge.flow *= 0.5  # flow also decays
+                edge.decay_count += 1
 
-            if edge.conductivity <= self.config.min_conductivity:
-                decayed_to_min += 1
+                if edge.conductivity <= self.config.min_conductivity:
+                    decayed_to_min += 1
 
-        self._last_decay = now
-        logger.info("[Physarum] Global decay applied | edges=%d | at_minimum=%d",
-                     len(self.edges), decayed_to_min)
-        return decayed_to_min
+            self._last_decay = now
+            logger.info("[Physarum] Global decay applied | edges=%d | at_minimum=%d",
+                         len(self.edges), decayed_to_min)
+            return decayed_to_min
 
     def maybe_decay(self) -> bool:
         """Run decay if enough time has passed since last decay cycle."""
@@ -432,38 +442,39 @@ class MedicalKnowledgeGraph:
         """
         Track that two nodes appeared together in a conversation.
         If co-occurrence exceeds threshold AND no edge exists, sprout a new edge.
-        This is the branching leaf / Physarum network expansion mechanism.
+        This is the branching leaf / Physarum network expansion mechanism. Thread-safe.
         """
         if node_id_a == node_id_b:
             return None
-        key = tuple(sorted([node_id_a, node_id_b]))
-        self._co_occurrence[key] += 1
+        with self._lock:
+            key = tuple(sorted([node_id_a, node_id_b]))
+            self._co_occurrence[key] += 1
 
-        if self._co_occurrence[key] >= self.config.co_occurrence_threshold:
-            # Check if edge already exists in either direction
-            if (node_id_a, node_id_b) not in self.edges and (node_id_b, node_id_a) not in self.edges:
-                node_a = self.nodes.get(node_id_a)
-                node_b = self.nodes.get(node_id_b)
-                if not node_a or not node_b:
-                    return None
+            if self._co_occurrence[key] >= self.config.co_occurrence_threshold:
+                # Check if edge already exists in either direction
+                if (node_id_a, node_id_b) not in self.edges and (node_id_b, node_id_a) not in self.edges:
+                    node_a = self.nodes.get(node_id_a)
+                    node_b = self.nodes.get(node_id_b)
+                    if not node_a or not node_b:
+                        return None
 
-                # Determine edge type from node types
-                edge_type = self._infer_edge_type(node_a, node_b)
-                if edge_type:
-                    edge = self.add_edge(
-                        node_id_a, node_id_b, edge_type,
-                        base_weight=0.05,
-                        confidence=self.config.sprout_confidence,
-                        source="learned",
-                        bidirectional=(node_a.node_type == node_b.node_type),
-                    )
-                    logger.info(
-                        "[BranchLeaf] New edge sprouted: %s (%s) → %s (%s) | co_occur=%d",
-                        node_a.name, node_a.node_type.value,
-                        node_b.name, node_b.node_type.value,
-                        self._co_occurrence[key],
-                    )
-                    return edge
+                    # Determine edge type from node types
+                    edge_type = self._infer_edge_type(node_a, node_b)
+                    if edge_type:
+                        edge = self.add_edge(
+                            node_id_a, node_id_b, edge_type,
+                            base_weight=0.05,
+                            confidence=self.config.sprout_confidence,
+                            source="learned",
+                            bidirectional=(node_a.node_type == node_b.node_type),
+                        )
+                        logger.info(
+                            "[BranchLeaf] New edge sprouted: %s (%s) → %s (%s) | co_occur=%d",
+                            node_a.name, node_a.node_type.value,
+                            node_b.name, node_b.node_type.value,
+                            self._co_occurrence[key],
+                        )
+                        return edge
         return None
 
     def _infer_edge_type(self, node_a: GraphNode, node_b: GraphNode) -> Optional[EdgeType]:

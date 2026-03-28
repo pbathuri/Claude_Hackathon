@@ -33,9 +33,17 @@ BROWSER_STT_TTL_SECONDS = int(os.getenv("BROWSER_STT_TTL_SECONDS", "604800"))  #
 # --- OpenAI (Whisper STT via /caller/stt) ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-# --- Claude Model ---
-INTAKE_MODEL = "claude-haiku-4-5-20241022"
+# --- Claude Models ---
+CONVERSATION_MODEL = os.getenv("CONVERSATION_MODEL", "claude-sonnet-4-20250514")
+TRANSLATION_MODEL = os.getenv("TRANSLATION_MODEL", "claude-haiku-4-5-20241022")
+INTAKE_MODEL = os.getenv("INTAKE_MODEL", "claude-haiku-4-5-20241022")
 INTAKE_MAX_TOKENS = 1024
+CONVERSATION_MAX_TOKENS = 350
+
+# --- ElevenLabs TTS ---
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "Xb7hH8MSUJpSbSDYk0k2")
+ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5")
 
 # --- Triage Base Scores (START protocol) ---
 TRIAGE_BASE_SCORES = {
@@ -54,6 +62,12 @@ FOLLOWUP_BONUS = 10
 # --- Case Expiration ---
 DOCTOR_RESPONSE_TIMEOUT_HOURS = 2
 FOLLOWUP_HOURS = [24, 48]
+
+# --- Conversation Flow ---
+MAX_TURNS_BEFORE_COMPLETE = 8
+MIN_SYMPTOMS_FOR_COMPLETE = 5
+STALE_TURNS_FOR_COMPLETE = 2
+GRAPH_CONFIDENCE_THRESHOLD = 0.7
 
 # --- WHO GHO API ---
 WHO_GHO_BASE_URL = "https://ghoapi.azureedge.net/api"

@@ -84,6 +84,13 @@ class Case(Base):
     icd11_codes = Column(JSON, default=[])
     recommended_specialty = Column(String(100), nullable=True)
 
+    # Phase 01: Canonical conversation log (ConversationSummary JSON)
+    conversation_log = Column(JSON, nullable=True)
+    # Phase 01: Explainable triage scoring (TriageScoreBreakdown JSON)
+    triage_breakdown = Column(JSON, nullable=True)
+    # Phase 01: Detected language of the patient
+    detected_language = Column(String(5), nullable=True)
+
     # Frontend-facing fields
     patient_alias = Column(String(20), nullable=True)   # e.g. "PT-2048"
     body_area = Column(String(100), nullable=True)       # e.g. "Abdomen", "Head"

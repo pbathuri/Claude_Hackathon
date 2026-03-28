@@ -347,6 +347,72 @@ Generates 5 Seaborn visualizations in `data/viz/`:
 5. **Inclusiveness**: Phone-first design for populations without internet, multi-country support
 6. **Sustainability**: Energy-efficient models, local data sovereignty, open-source architecture
 
+## Production Hardening (Phases 00-08)
+
+The system has been hardened across 9 phases documented in `docs/phases/`:
+
+| Phase | Focus | Key Deliverables |
+|-------|-------|-----------------|
+| 00 | Repo Audit | 27-file audit, target architecture, critical findings |
+| 01 | Data Integrity | Canonical enums, conversation turn model, clinical extraction schema, score breakdown |
+| 02 | Security | Auth middleware with demo/API-key/doctor modes, request ID tracing, role-based access scaffold |
+| 03 | Safety Engine | 3-tier emergency detection (keywords + regex + multilingual), uncertainty model, jurisdiction policy, conversation sufficiency |
+| 04 | Workflow | Case state machine with 13 states and validated transitions, outbox job model |
+| 05 | Portal Sync | Doctor type fix, demo mode awareness, case status alignment |
+| 06 | FHIR | Export adapters for Patient, Encounter, Observation, Condition, Consent, Practitioner, AuditEvent |
+| 07 | Testing | 32 unit tests (safety, state machine, FHIR, jurisdiction), contract tests, golden fixtures |
+| 08 | Operations | Feature flags (7 env vars), kill switch, request tracing, structured logging |
+
+### Safety Architecture
+
+Emergency detection uses three tiers to minimize false negatives:
+1. **Exact keywords**: chest pain, can't breathe, stroke, seizure, suicidal (immediate)
+2. **Regex patterns**: paraphrases like "struggling to breathe", "pain in my chest", "face drooping"
+3. **Contextual**: pediatric emergencies, obstetric emergencies, high fever thresholds
+
+Structured uncertainty states (insufficient_information, conflicting_information, translation_uncertainty, low_confidence_extraction) flow through to the doctor portal as explicit warnings.
+
+### Case State Machine
+
+```
+created → active_intake → intake_complete → pending_review → assigned → in_review → responded → closed
+                ↓                                    ↓              ↓
+        insufficient_info                      expired → requeue   escalated
+```
+
+All transitions validated centrally. Invalid transitions are rejected with clear error messages.
+
+### Demo Mode vs Production Mode
+
+| Behavior | DEMO_MODE=1 (default) | DEMO_MODE=0 |
+|----------|----------------------|-------------|
+| Authentication | Bypassed | Required (API key or doctor ID) |
+| Mock data fallback | Enabled with banner | Disabled, errors shown |
+| Kill switches | Available | Available |
+| Audit logging | Active | Active |
+
+## Documentation
+
+| Document | Location | Contents |
+|----------|----------|----------|
+| Phase Logs | `docs/phases/PHASE_00-08_*.md` | Objective, files changed, decisions, risks |
+| Workflow Maps | `docs/WORKFLOW_MAPS.md` | 10 Mermaid diagrams for all system flows |
+| Architecture Decisions | `docs/ARCHITECTURE_DECISIONS.md` | 10 ADRs (SQLite, auth, safety, FHIR, etc.) |
+| Runbook | `docs/RUNBOOK.md` | Startup, env vars, kill switches, incident response, data purge |
+| Risk Register | `docs/RISK_REGISTER.md` | 12 risks with likelihood, impact, mitigation, status |
+| Open Questions | `docs/OPEN_QUESTIONS_AND_FOLLOWUPS.md` | Production, clinical, regulatory, architecture gaps |
+
+## Important Limitations and Honest Disclaimers
+
+- **This system does NOT diagnose**. AI provides structured symptom intake guidance only. All clinical decisions require a licensed practitioner.
+- **Authentication is demo-mode by default** (DEMO_MODE=1). Production deployment requires API keys and doctor identity enforcement.
+- **SQLite is used for the hackathon**. Production requires PostgreSQL with proper migrations.
+- **Session state is in-memory**. Active calls are lost on server restart. Production requires Redis or database-backed sessions.
+- **Symptom checker accuracy is inherently limited**. Per systematic reviews (Wallace et al., npj Digital Medicine), diagnostic accuracy of digital tools is generally low. This system is designed as a structured intake and routing tool, not an autonomous diagnostic system.
+- **START triage is used as a hackathon heuristic**. Production should use telephone triage protocols (AAP/Briggs) designed for call-based disposition rather than mass-casualty field triage.
+- **Twilio webhook signature validation is not implemented**. Forged requests could create cases.
+- **Follow-up SMS delivery is a stub**. No actual SMS messages are sent.
+
 ## Hackathon Track
 
 **Track 1: Biology & Physical Health** — Diagnostic aids for underserved clinics, symptom assessment and triage helpers, health literacy tools for treatment decisions.

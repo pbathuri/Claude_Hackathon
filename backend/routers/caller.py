@@ -15,6 +15,12 @@ Integration flow:
   7. GET  /caller/session/{id}      → check case status (frontend contract shape)
   8. GET  /caller/disclosure/{cc}   → get verbal disclosure script for a country
 
+Language handling:
+  - Language is auto-detected from user's first message (or explicit via request)
+  - User text is translated to English for KG traversal + clinical processing
+  - AI responses are generated in English, then translated back to user's language
+  - Verbal disclosure is translated for informed consent
+
 Where conversation data goes: the web simulator (static/caller.html) sends turns to /caller/ai-turn
 and finalizes with /caller/session/submit. Twilio voice uses /twilio/* webhooks and _submit_twilio_case.
 The external LangGraph agent (src/main.py) calls the same session/start, consent, submit endpoints.
@@ -38,14 +44,34 @@ from services.case_service import (
     get_case_for_frontend, URGENCY_SCORES, TIER_SCORES,
     compute_frontend_priority, TRIAGE_TO_URGENCY,
 )
-from services.triage_service import check_emergency_keywords, get_base_score
+from services.triage_service import check_emergency_keywords, get_base_score, build_triage_breakdown
+from safety.red_flag_rules import detect_red_flags
 from services.icd11_service import map_intake_to_icd11, search_icd11
-from config import is_knowledge_graph_enabled, OPENAI_API_KEY
+from services.language_service import (
+    detect_language,
+    get_language_config,
+    translate_to_english,
+    translate_from_english,
+    translate_disclosure,
+    build_emergency_message,
+    get_emergency_number,
+    SUPPORTED_LANGUAGES,
+)
+from config import (
+    is_knowledge_graph_enabled, OPENAI_API_KEY,
+    CONVERSATION_MODEL, CONVERSATION_MAX_TOKENS,
+    ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID,
+    MAX_TURNS_BEFORE_COMPLETE, MIN_SYMPTOMS_FOR_COMPLETE,
+    STALE_TURNS_FOR_COMPLETE, GRAPH_CONFIDENCE_THRESHOLD,
+)
 
 import logging
 kg_logger = logging.getLogger(__name__)
 
 _anthropic_client = None
+
+# Per-session language tracking: case_id → detected language code
+_session_languages: dict[str, str] = {}
 
 
 def _get_anthropic():
@@ -123,6 +149,11 @@ async def start_session(req: SessionStartRequest, db: Session = Depends(get_db))
     # Build verbal disclosure script (per SDD Section 6.4.1)
     country_perm = db.query(CountryPermission).filter_by(country_code=country_code).first()
     verbal_disclosure = _build_verbal_disclosure(country_perm)
+
+    # Track session language and translate disclosure if needed
+    _session_languages[case.id] = req.language
+    if req.language != "en":
+        verbal_disclosure = translate_disclosure(verbal_disclosure, req.language)
 
     return SessionStartResponse(
         session_id=case.id,
@@ -234,29 +265,35 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    # Detect red flags from symptom list and transcript
-    red_flags = []
+    # ── Layered red flag detection (Phase 03 safety engine) ────────────
     all_text = " ".join(req.symptoms) + " " + req.transcript_summary
+    session_lang = _session_languages.get(req.case_id, "en")
+    red_flag_result = detect_red_flags(
+        text=all_text,
+        language=session_lang,
+        english_text=all_text if session_lang == "en" else None,
+    )
+    is_emergency = red_flag_result.is_emergency
+
+    # Also check individual symptoms with keyword layer
+    red_flags = []
     for symptom in req.symptoms:
         if check_emergency_keywords(symptom):
             red_flags.append(symptom)
     if check_emergency_keywords(req.transcript_summary):
-        # Extract specific red flag phrases
         from services.triage_service import EMERGENCY_KEYWORDS
         lower_text = all_text.lower()
         for kw in EMERGENCY_KEYWORDS:
             if kw in lower_text:
-                # Capitalize nicely for frontend
                 red_flags.append(kw.title())
-    red_flags = list(dict.fromkeys(red_flags))  # deduplicate, preserve order
+    # Merge safety engine flags
+    for flag_info in red_flag_result.flags:
+        flag_name = flag_info["flag"].split(":")[-1].title()
+        if flag_name not in red_flags:
+            red_flags.append(flag_name)
+    red_flags = list(dict.fromkeys(red_flags))
 
     # Determine triage level from severity + red flags
-    is_emergency = len(red_flags) > 0 and any(
-        kw in all_text.lower() for kw in [
-            "chest pain", "can't breathe", "cannot breathe", "stroke",
-            "unconscious", "unresponsive", "suicidal", "self-harm",
-        ]
-    )
     if is_emergency:
         triage_level = "RED"
     elif req.severity >= 7 or len(red_flags) > 0:
@@ -287,12 +324,17 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
         "patient_summary": req.transcript_summary or symptom_summary,
     }
 
-    # ICD-11 mapping
-    icd11_results = await map_intake_to_icd11(intake_data)
-    icd11_flat = []
-    for item in icd11_results:
-        for code in item.get("icd11_codes", []):
-            icd11_flat.append(code)
+    # ICD-11 mapping (non-blocking — returns empty on failure)
+    try:
+        icd11_results = await map_intake_to_icd11(intake_data)
+        icd11_flat = [
+            code
+            for item in icd11_results
+            for code in item.get("icd11_codes", [])
+        ]
+    except Exception as exc:
+        kg_logger.warning("[ICD-11] Mapping failed (non-blocking): %s", exc)
+        icd11_flat = []
 
     # ── Knowledge Graph: navigate symptoms for enrichment ────────────
     kg_insights = {}
@@ -326,23 +368,43 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
         except Exception as exc:
             kg_logger.warning("[KG] Graph enrichment failed (non-blocking): %s", exc)
 
-    # Complete the case intake
-    case = complete_intake(db, req.case_id, intake_data, icd11_flat)
-    case = move_to_pending(db, req.case_id)
-
-    # Get country info for response
+    # ── Build explainable triage breakdown (Phase 01) ────────────────
     country_perm = db.query(CountryPermission).filter_by(
         country_code=case.country_code
     ).first()
+    _country_tier = country_perm.country_tier if country_perm else 3
+
+    triage_breakdown = build_triage_breakdown(
+        triage_level=triage_level,
+        severity=req.severity,
+        red_flags=red_flags,
+        symptom_count=len(req.symptoms),
+        duration=req.duration,
+        kg_confidence=kg_insights.get("graph_confidence", 0.0),
+        country_tier=_country_tier,
+    )
+    intake_data["triage_breakdown"] = triage_breakdown
+
+    # Complete the case intake
+    case = complete_intake(db, req.case_id, intake_data, icd11_flat)
+
+    # Store triage breakdown and detected language on case
+    case.triage_breakdown = triage_breakdown
+    case.detected_language = session_lang
+    case.priority_score = triage_breakdown["total_priority"]
+    db.commit()
+    db.refresh(case)
+
+    case = move_to_pending(db, req.case_id)
 
     return SubmitConversationResponse(
         case_id=case.id,
         patient_alias=case.patient_alias or "",
         country=country_perm.country_name if country_perm else case.country_code,
-        country_tier=country_perm.country_tier if country_perm else 4,
+        country_tier=_country_tier,
         urgency=TRIAGE_TO_URGENCY.get(triage_level, "Low"),
         triage_level=triage_level,
-        priority_score=case.priority_score or 0,
+        priority_score=triage_breakdown["total_priority"],
         symptom_summary=symptom_summary,
         pain_score=req.severity,
         symptom_duration=req.duration,
@@ -694,8 +756,14 @@ def _generate_claude_response(
     message_history: list[dict],
     *,
     use_knowledge_graph: bool = True,
+    country_code: str = "",
+    previous_ai_messages: list[str] | None = None,
 ) -> str:
-    """Call Claude to generate a conversational AI response; KG context optional."""
+    """
+    Call Claude to generate a conversational AI response; KG context optional.
+    Includes anti-repetition logic and localized emergency numbers.
+    Response is always in English (translation to user language happens in the caller).
+    """
     if use_knowledge_graph:
         kg_parts = []
         if activated_conditions:
@@ -729,12 +797,14 @@ def _generate_claude_response(
         context_header = "INTAKE CONTEXT"
         followup_rule = "- Ask one clear, relevant follow-up question based on what you know so far.\n"
 
+    # Localized emergency number
+    emerg = get_emergency_number(country_code)
     emergency_line = ""
     if is_emergency:
         flags_str = ", ".join(emergency_flags) if emergency_flags else "critical symptoms"
         emergency_line = (
             f"\nEMERGENCY DETECTED: {flags_str}. "
-            "Tell the patient to call emergency services (112/911) IMMEDIATELY. "
+            f"Tell the patient to call {emerg['name']} at {emerg['number']} IMMEDIATELY. "
             "Their safety is the absolute priority. Be direct and urgent."
         )
 
@@ -747,6 +817,17 @@ def _generate_claude_response(
             "physician for review. Thank them for their patience."
         )
 
+    # Anti-repetition context
+    anti_rep = ""
+    if previous_ai_messages:
+        recent = previous_ai_messages[-2:]  # last 2 messages
+        anti_rep = (
+            "\nANTI-REPETITION: Your recent messages were:\n"
+            + "\n".join(f'  - "{m[:100]}"' for m in recent)
+            + "\nDo NOT repeat these phrases or questions. Ask something NEW and different. "
+            "If you already asked about a topic, move on to a different aspect."
+        )
+
     system_prompt = (
         "You are a WHO-aligned health assistant conducting a symptom intake "
         "conversation over the phone. Your role is to gather symptom information "
@@ -756,15 +837,17 @@ def _generate_claude_response(
         "- Do NOT prescribe treatments or medications.\n"
         "- Do NOT interpret test results.\n"
         "- Always remind the patient that a qualified physician will review their case.\n"
-        "- Be empathetic, patient, and use simple language.\n\n"
+        "- Be empathetic, patient, and use simple language.\n"
+        "- RESPOND IN ENGLISH ONLY (translation is handled separately).\n\n"
         f"{context_header}:\n{kg_block}\n\n"
         "CONVERSATION RULES:\n"
         f"- Turn number: {turn_number}\n"
         "- Keep responses concise (2-3 sentences max).\n"
         f"{followup_rule}"
         "- Acknowledge what the patient has shared before asking the next question.\n"
-        "- If this is turn 1, greet the patient warmly and ask about their main concern."
-        f"{emergency_line}{completion_line}"
+        "- If this is turn 1, greet the patient warmly and ask about their main concern.\n"
+        "- NEVER repeat a question you already asked. Progress the conversation forward."
+        f"{anti_rep}{emergency_line}{completion_line}"
     )
 
     messages = []
@@ -776,8 +859,8 @@ def _generate_claude_response(
     try:
         client = _get_anthropic()
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=300,
+            model=CONVERSATION_MODEL,
+            max_tokens=CONVERSATION_MAX_TOKENS,
             system=system_prompt,
             messages=messages,
         )
@@ -797,15 +880,39 @@ def _generate_claude_response(
 
 # Tracks turns with no new symptoms per case for auto-completion
 _stale_turn_tracker: dict[str, int] = {}
+# Tracks previous AI messages per case for anti-repetition
+_ai_message_history: dict[str, list[str]] = {}
 
 
 @router.post("/ai-turn", response_model=AITurnResponse)
 async def ai_conversation_turn(req: AITurnRequest):
     """
     Process one conversation turn from the web simulator.
-    Optionally uses the Knowledge Graph navigator when ENABLE_KNOWLEDGE_GRAPH is set;
-    otherwise keyword-based symptom extraction and Claude without graph context.
+
+    Language pipeline:
+    1. Detect language from user message (or use explicit `language` field)
+    2. Translate user message to English for KG traversal + symptom extraction
+    3. Run all clinical processing in English
+    4. Generate AI response in English
+    5. Translate AI response back to user's language
+
+    Anti-repetition: tracks previous AI messages per case to prevent loops.
     """
+    # ── 0. Language detection and translation ──
+    user_lang = req.language
+    if req.turn_number <= 1 or user_lang == "auto":
+        detected = detect_language(req.user_message)
+        if detected != "en":
+            user_lang = detected
+            kg_logger.info("[AI Turn] Detected language: %s for case %s", user_lang, req.case_id)
+    _session_languages[req.case_id] = user_lang
+
+    # Translate to English for all clinical processing
+    english_message = req.user_message
+    if user_lang != "en":
+        english_message = translate_to_english(req.user_message, user_lang)
+        kg_logger.info("[AI Turn] Translated user input: %s → '%s'", user_lang, english_message[:80])
+
     # ── 1. Try to get the KG graph (non-fatal if disabled or unavailable) ──
     graph = None
     if is_knowledge_graph_enabled():
@@ -815,10 +922,10 @@ async def ai_conversation_turn(req: AITurnRequest):
         except Exception as exc:
             kg_logger.warning("[AI Turn] KG not available, using keyword-only mode: %s", exc)
 
-    # ── 2. Extract symptoms from user message ──
+    # ── 2. Extract symptoms from English-translated message ──
     detected_symptoms: list[str] = []
     if graph:
-        detected_symptoms = _extract_symptoms_from_text(req.user_message, graph)
+        detected_symptoms = _extract_symptoms_from_text(english_message, graph)
     else:
         common = [
             "fever", "headache", "cough", "nausea", "vomiting", "diarrhea",
@@ -826,10 +933,10 @@ async def ai_conversation_turn(req: AITurnRequest):
             "sore throat", "body aches", "chills", "shortness of breath",
             "back pain", "joint pain", "loss of appetite", "weight loss",
         ]
-        text_lower = req.user_message.lower()
+        text_lower = english_message.lower()
         detected_symptoms = [s for s in common if s in text_lower]
 
-    # ── 3. Merge with previously collected symptoms ──
+    # ── 3. Merge with previously collected symptoms (deduplicate) ──
     all_symptoms = list(dict.fromkeys(req.collected_symptoms + detected_symptoms))
 
     # ── 4. KG navigation ──
@@ -862,15 +969,15 @@ async def ai_conversation_turn(req: AITurnRequest):
         except Exception as exc:
             kg_logger.warning("[AI Turn] KG navigation failed (non-blocking): %s", exc)
 
-    # ── 5. Emergency check ──
-    is_emergency = check_emergency_keywords(req.user_message)
+    # ── 5. Emergency check (on English text for reliable keyword matching) ──
+    is_emergency = check_emergency_keywords(english_message)
     emergency_flags: list[str] = []
     if is_emergency:
         from services.triage_service import EMERGENCY_KEYWORDS
-        lower = req.user_message.lower()
+        lower = english_message.lower()
         emergency_flags = [kw.title() for kw in EMERGENCY_KEYWORDS if kw in lower]
 
-    # ── 6. Determine completion (smarter heuristics) ──
+    # ── 6. Determine completion (smarter heuristics from config) ──
     new_count = len([s for s in detected_symptoms if s not in req.collected_symptoms])
     if new_count == 0:
         _stale_turn_tracker[req.case_id] = _stale_turn_tracker.get(req.case_id, 0) + 1
@@ -880,17 +987,17 @@ async def ai_conversation_turn(req: AITurnRequest):
     stale_turns = _stale_turn_tracker.get(req.case_id, 0)
     should_complete = (
         is_emergency
-        or len(all_symptoms) >= 5
-        or graph_confidence > 0.7
-        or req.turn_number >= 6
-        or stale_turns >= 2
+        or len(all_symptoms) >= MIN_SYMPTOMS_FOR_COMPLETE
+        or graph_confidence > GRAPH_CONFIDENCE_THRESHOLD
+        or req.turn_number >= MAX_TURNS_BEFORE_COMPLETE
+        or stale_turns >= STALE_TURNS_FOR_COMPLETE
     )
 
-    # ── 7. Extract severity, duration, body area from user message ──
+    # ── 7. Extract severity, duration, body area from English message ──
     severity_extracted = None
     sev_match = re.search(
         r'(\d{1,2})\s*(?:out of|/)\s*10|pain\s*level\s*(\d{1,2})|severity\s*(\d{1,2})',
-        req.user_message, re.IGNORECASE,
+        english_message, re.IGNORECASE,
     )
     if sev_match:
         raw = next((g for g in sev_match.groups() if g is not None), None)
@@ -900,21 +1007,21 @@ async def ai_conversation_turn(req: AITurnRequest):
     duration_extracted = None
     dur_match = re.search(
         r'(\d+\s*(?:days?|weeks?|months?|hours?|years?))',
-        req.user_message, re.IGNORECASE,
+        english_message, re.IGNORECASE,
     )
     if dur_match:
         duration_extracted = dur_match.group(1)
     else:
         since_match = re.search(
             r'since\s+(yesterday|last\s+\w+)',
-            req.user_message, re.IGNORECASE,
+            english_message, re.IGNORECASE,
         )
         if since_match:
             duration_extracted = f"since {since_match.group(1)}"
 
     body_area_extracted = body_systems[0] if body_systems else None
 
-    # ── 8. Build message history for Claude (browser sends `text`; API may send `content`) ──
+    # ── 8. Build message history in ENGLISH for Claude ──
     claude_history = []
     for msg in req.message_history:
         if msg.get("role") not in ("user", "assistant"):
@@ -923,10 +1030,23 @@ async def ai_conversation_turn(req: AITurnRequest):
         if body:
             claude_history.append({"role": msg["role"], "content": body})
 
-    # ── 9. Generate AI response via Claude ──
-    ai_message = _generate_claude_response(
+    # ── 9. Get country code for localized emergency numbers ──
+    case_country = ""
+    try:
+        from database import SessionLocal
+        db = SessionLocal()
+        case = db.query(Case).filter_by(id=req.case_id).first()
+        if case:
+            case_country = case.country_code or ""
+        db.close()
+    except Exception:
+        pass
+
+    # ── 10. Generate AI response via Claude (in English) ──
+    previous_msgs = _ai_message_history.get(req.case_id, [])
+    ai_message_english = _generate_claude_response(
         turn_number=req.turn_number,
-        user_message=req.user_message,
+        user_message=english_message,
         all_symptoms=all_symptoms,
         suggested_questions=suggested_questions,
         activated_conditions=activated_conditions,
@@ -936,15 +1056,28 @@ async def ai_conversation_turn(req: AITurnRequest):
         should_complete=should_complete,
         message_history=claude_history,
         use_knowledge_graph=graph is not None,
+        country_code=case_country,
+        previous_ai_messages=previous_msgs,
     )
 
-    # ── 10. Generate clinical summary on completion ──
+    # Track for anti-repetition
+    if req.case_id not in _ai_message_history:
+        _ai_message_history[req.case_id] = []
+    _ai_message_history[req.case_id].append(ai_message_english)
+
+    # ── 11. Translate AI response to user's language ──
+    ai_message = ai_message_english
+    if user_lang != "en":
+        ai_message = translate_from_english(ai_message_english, user_lang)
+        kg_logger.info("[AI Turn] Translated response en→%s", user_lang)
+
+    # ── 12. Generate clinical summary on completion (always in English) ──
     transcript_summary = None
     if should_complete and all_symptoms:
         try:
             client = _get_anthropic()
             summary_resp = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=CONVERSATION_MODEL,
                 max_tokens=100,
                 system=(
                     "You are a clinical note writer. Produce a single concise "
@@ -965,6 +1098,11 @@ async def ai_conversation_turn(req: AITurnRequest):
         except Exception as exc:
             kg_logger.warning("[Claude] Summary generation failed: %s", exc)
             transcript_summary = f"Patient reports: {', '.join(all_symptoms)}."
+
+        # Clean up session tracking on completion
+        _stale_turn_tracker.pop(req.case_id, None)
+        _ai_message_history.pop(req.case_id, None)
+        _session_languages.pop(req.case_id, None)
 
     return AITurnResponse(
         ai_message=ai_message,
@@ -1095,25 +1233,35 @@ async def text_to_speech(req: TTSRequest):
     import httpx
     from fastapi.responses import StreamingResponse
 
-    api_key = os.environ.get("ELEVENLABS_API_KEY")
-    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "Xb7hH8MSUJpSbSDYk0k2")
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=503, detail="ELEVENLABS_API_KEY not configured")
 
-    if not api_key:
-        raise HTTPException(status_code=500, detail="ELEVENLABS_API_KEY not configured")
+    if not req.text or not req.text.strip():
+        raise HTTPException(status_code=400, detail="Empty text")
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream",
-            headers={"xi-api-key": api_key, "Content-Type": "application/json"},
-            json={
-                "text": req.text,
-                "model_id": os.environ.get("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5"),
-                "voice_settings": {"stability": 0.75, "similarity_boost": 0.75},
-            },
-            timeout=15.0,
-        )
+    # Truncate to prevent excessively long TTS (Twilio/ElevenLabs limits)
+    text = req.text[:2000]
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream",
+                headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+                json={
+                    "text": text,
+                    "model_id": ELEVENLABS_MODEL_ID,
+                    "voice_settings": {"stability": 0.75, "similarity_boost": 0.75},
+                },
+                timeout=15.0,
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="TTS service timeout")
+    except Exception as exc:
+        kg_logger.warning("[TTS] ElevenLabs error: %s", exc)
+        raise HTTPException(status_code=502, detail="TTS service unavailable")
 
     if resp.status_code != 200:
+        kg_logger.warning("[TTS] ElevenLabs HTTP %d: %s", resp.status_code, resp.text[:200])
         raise HTTPException(status_code=502, detail="TTS service error")
 
     return StreamingResponse(
