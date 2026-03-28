@@ -189,16 +189,20 @@ def build_medical_knowledge_graph(persist_path: str = None) -> MedicalKnowledgeG
     )
 
     # ── Step 3: Run data pipeline enrichment (optional, cache-backed) ────
-    try:
-        from .data_pipeline import enrich_graph_from_pipeline
+    import os
+    if os.environ.get("SKIP_PIPELINE_ENRICHMENT", "").lower() in ("1", "true", "yes"):
+        logger.info("[Builder] Skipping pipeline enrichment (SKIP_PIPELINE_ENRICHMENT=1)")
+    else:
+        try:
+            from .data_pipeline import enrich_graph_from_pipeline
 
-        logger.info("[Builder] Running data pipeline enrichment...")
-        enrichment_report = enrich_graph_from_pipeline(graph, use_cache=True)
-        logger.info("[Builder] Pipeline enrichment: +%d nodes, +%d edges",
-                     enrichment_report.get("nodes_added", 0),
-                     enrichment_report.get("edges_added", 0))
-    except Exception as exc:
-        logger.warning("[Builder] Pipeline enrichment skipped: %s", exc)
+            logger.info("[Builder] Running data pipeline enrichment...")
+            enrichment_report = enrich_graph_from_pipeline(graph, use_cache=True)
+            logger.info("[Builder] Pipeline enrichment: +%d nodes, +%d edges",
+                         enrichment_report.get("nodes_added", 0),
+                         enrichment_report.get("edges_added", 0))
+        except Exception as exc:
+            logger.warning("[Builder] Pipeline enrichment skipped: %s", exc)
 
     elapsed = time.time() - start
     stats = graph.stats()
