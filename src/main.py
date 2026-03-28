@@ -6,6 +6,7 @@ import subprocess
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
@@ -91,6 +92,8 @@ async def chat(
     text:            Optional[str]        = Form(default=None),
     symptoms:        str                  = Form(default="[]"),
     message_history: str                  = Form(default="[]"),
+    phone_number:    Optional[str]        = Form(default=None),
+    case_id:         Optional[str]        = Form(default=None),
 ):
     """
     One turn of the diagnostic conversation.
@@ -143,6 +146,49 @@ async def chat(
         "conversation_complete": False,
     }
 
+    # ── Backend integration: start session on first turn ─────────────
+    cfg: Configuration = request.app.state.cfg
+    backend = cfg.backend_url
+
+    if phone_number and not case_id:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(f"{backend}/caller/session/start", json={
+                    "phone_number": phone_number,
+                })
+            if r.status_code == 200:
+                session_data = r.json()
+                case_id = session_data["case_id"]
+
+                disclosure = session_data.get("verbal_disclosure", "")
+                if disclosure:
+                    initial_state["message_history"] = prev_history + [
+                        {"role": "assistant", "content": disclosure}
+                    ]
+
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(f"{backend}/caller/session/consent", json={
+                        "case_id": case_id,
+                        "consent_given": True,
+                    })
+
+                logger.info("[Backend] Session started | case_id=%s | country=%s | tier=%d",
+                            case_id, session_data.get("country_name"), session_data.get("country_tier"))
+            elif r.status_code == 403:
+                error_data = r.json().get("detail", {})
+                return JSONResponse(content={
+                    "transcript": None,
+                    "message": f"We're sorry, telehealth is not yet available in {error_data.get('country', 'your region')}. Please contact local health services.",
+                    "symptoms": [],
+                    "message_history": prev_history,
+                    "audio": None,
+                    "conversation_complete": True,
+                    "turns": len(prev_history),
+                    "case_id": None,
+                })
+        except httpx.ConnectError:
+            logger.warning("[Backend] Backend unreachable — continuing without session")
+
     # ── Run graph ─────────────────────────────────────────────────────────────
     cfg: Configuration = request.app.state.cfg
     runnable_config = {
@@ -181,6 +227,33 @@ async def chat(
         "conversation_complete": result.get("conversation_complete", False),
         "turns":                 len(history),
     }
+
+    # ── Backend integration: submit completed conversation ───────────
+    if response_body["conversation_complete"] and case_id:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.post(f"{backend}/caller/session/submit", json={
+                    "case_id":              case_id,
+                    "symptoms":             response_body["symptoms"],
+                    "message_history":      history,
+                    "transcript_summary":   reply_text,
+                    "severity":             5,
+                    "duration":             "",
+                    "body_area":            "",
+                })
+            if r.status_code == 200:
+                backend_result = r.json()
+                response_body["backend_case"] = backend_result
+                logger.info(
+                    "[Backend] Case submitted | case_id=%s | triage=%s | priority=%.0f",
+                    backend_result["case_id"],
+                    backend_result["triage_level"],
+                    backend_result["priority_score"],
+                )
+        except Exception as exc:
+            logger.error("[Backend] Submit failed (non-blocking): %s", exc)
+
+    response_body["case_id"] = case_id
 
     logger.info(
         "[API] Response | turns=%d | symptoms=%s | complete=%s | audio=%s",

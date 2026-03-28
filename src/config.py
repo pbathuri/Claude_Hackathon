@@ -72,6 +72,12 @@ class Configuration(BaseModel):
         description="Piper voice model name (must be downloaded in the container)",
     )
 
+    # ── Backend API ────────────────────────────────────────────
+    backend_url: str = Field(
+        default="http://localhost:8000",
+        description="Base URL of the telehealth backend API",
+    )
+
     # ── Helpers ───────────────────────────────────────────────────
     def _is_ollama(self, model: str) -> bool:
         return model.startswith("ollama:")

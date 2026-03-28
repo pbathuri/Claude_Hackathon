@@ -135,6 +135,37 @@ async def speech_to_text(state: MainState, config: RunnableConfig) -> dict:
     return {"transcript": transcript, "audio_input": None}
 
 
+# ── Emergency Check Node ─────────────────────────────────────────────────────
+async def emergency_check(state: MainState, config: RunnableConfig) -> dict:
+    """Check transcript for life-threatening keywords before LLM processes it."""
+    transcript = state.get("transcript")
+    if not transcript:
+        return {}
+
+    EMERGENCY_KEYWORDS = [
+        "chest pain", "chest tightness", "can't breathe", "cannot breathe",
+        "difficulty breathing", "shortness of breath", "stroke",
+        "face drooping", "arm weakness", "slurred speech",
+        "severe bleeding", "unconscious", "unresponsive",
+        "suicidal", "self-harm", "throat swelling",
+    ]
+    lower = transcript.lower()
+    if any(kw in lower for kw in EMERGENCY_KEYWORDS):
+        logger.warning("[Emergency] Detected in transcript: %r", transcript)
+        return {
+            "conversation_complete": True,
+            "message_history": [{
+                "role": "assistant",
+                "content": "This sounds like it could be a medical emergency. "
+                           "Please call emergency services immediately. "
+                           "If you are in Kenya, call 999. "
+                           "If you are in Nigeria, call 112. "
+                           "If you are in India, call 112.",
+            }],
+        }
+    return {}
+
+
 # ── Human Interaction Node ────────────────────────────────────────────────────
 async def human_interaction(state: MainState, config: RunnableConfig) -> dict:
     _log_state("human_interaction:enter", state)
@@ -249,6 +280,7 @@ def build_graph() -> StateGraph:
 
     g.add_node("router",            router)
     g.add_node("speech_to_text",    speech_to_text)
+    g.add_node("emergency_check",   emergency_check)
     g.add_node("human_interaction", human_interaction)
     g.add_node("text_to_speech",    text_to_speech)
     g.add_node("continue_gate",     continue_gate)
@@ -264,7 +296,8 @@ def build_graph() -> StateGraph:
         },
     )
 
-    g.add_edge("speech_to_text",    "human_interaction")
+    g.add_edge("speech_to_text",    "emergency_check")
+    g.add_edge("emergency_check",   "human_interaction")
     g.add_edge("human_interaction", "text_to_speech")
     g.add_edge("text_to_speech",    "continue_gate")
     g.add_edge("continue_gate",     END)
