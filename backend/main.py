@@ -3,10 +3,16 @@ WHO-Aligned AI Telehealth Backend
 Main FastAPI application with startup/shutdown lifecycle.
 """
 import logging
+import os
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 
 from database import init_db
 from services.country_service import seed_country_permissions
@@ -15,6 +21,7 @@ from database import SessionLocal
 
 from routers import intake, cases, doctors, health_data, caller
 from routers.knowledge_graph import router as kg_router, init_knowledge_graph
+from routers.twilio_voice import router as twilio_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,7 +73,12 @@ app = FastAPI(
 # CORS for doctor portal frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
+    allow_origins=[
+        "https://doctor-portal-flax.vercel.app",
+        "https://claude-hackathon-u86l.onrender.com",
+        "http://localhost:3001",
+        "http://localhost:8000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -79,6 +91,16 @@ app.include_router(doctors.router)
 app.include_router(health_data.router)
 app.include_router(caller.router)
 app.include_router(kg_router)
+app.include_router(twilio_router)
+
+
+os.makedirs("static/uploads", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/call")
+def call_redirect():
+    return RedirectResponse(url="/static/caller.html")
 
 
 @app.get("/")
@@ -94,6 +116,7 @@ def root():
             "doctors": "/doctors",
             "health": "/health",
             "knowledge_graph": "/kg",
+            "caller_simulator": "/call",
         },
     }
 

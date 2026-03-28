@@ -9,6 +9,8 @@ import { Brain, Stethoscope, MessageCircle, Activity } from "lucide-react";
 
 interface Props {
   caseData: Case;
+  kgInsights?: KGNavigationResult;
+  onSpecialtyResolved?: (specialty: string) => void;
 }
 
 function parseSymptoms(summary: string): string[] {
@@ -18,17 +20,33 @@ function parseSymptoms(summary: string): string[] {
     .filter((s) => s.length > 2);
 }
 
-export default function KGInsightsPanel({ caseData }: Props) {
+function hasData(insights?: KGNavigationResult): boolean {
+  return !!(
+    insights &&
+    insights.conditions &&
+    insights.conditions.length > 0
+  );
+}
+
+export default function KGInsightsPanel({ caseData, kgInsights, onSpecialtyResolved }: Props) {
   const [result, setResult] = useState<KGNavigationResult | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (hasData(kgInsights)) {
+      setResult(kgInsights!);
+      setLoading(false);
+      onSpecialtyResolved?.(kgInsights!.recommendedSpecialty);
+      return;
+    }
+
     const symptoms = parseSymptoms(caseData.symptomSummary);
     navigateKG(symptoms).then((data) => {
       setResult(data);
       setLoading(false);
+      onSpecialtyResolved?.(data.recommendedSpecialty);
     });
-  }, [caseData.symptomSummary]);
+  }, [caseData.symptomSummary, kgInsights, onSpecialtyResolved]);
 
   if (loading) {
     return (
@@ -48,7 +66,7 @@ export default function KGInsightsPanel({ caseData }: Props) {
           KG Insights
         </h2>
         <p className="text-xs text-gray-400 mt-0.5">
-          Generated from symptom graph navigation
+          {hasData(kgInsights) ? "From intake-time analysis" : "Generated from symptom graph navigation"}
         </p>
       </div>
 

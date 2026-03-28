@@ -1,0 +1,26 @@
+services:
+  - type: web
+    runtime: python
+    name: who-triage-backend
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.2"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        value: Xb7hH8MSUJpSbSDYk0k2
+      - key: ELEVENLABS_MODEL_ID
+        value: eleven_flash_v2_5
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_API_KEY_SID
+        sync: false
+      - key: TWILIO_API_KEY_SECRET
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        value: "+14788125405"

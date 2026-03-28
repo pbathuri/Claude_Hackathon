@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { Case } from "@/types";
-import { getCases, timeAgo } from "@/lib/api";
+import { Case, Doctor } from "@/types";
+import { getCases, getDoctors, timeAgo } from "@/lib/api";
 import StatsCard from "@/components/StatsCard";
 import PieChart from "@/components/PieChart";
 import BarChart from "@/components/BarChart";
@@ -13,12 +13,7 @@ import PriorityBar from "@/components/PriorityBar";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { FileText, AlertTriangle, CalendarClock, Gauge, UserCheck, Clock } from "lucide-react";
 
-const mockDoctors = [
-  { name: "Dr. Amara", status: "online" as const, cases: 3 },
-  { name: "Dr. Chen", status: "busy" as const, cases: 5 },
-  { name: "Dr. Müller", status: "offline" as const, cases: 0 },
-  { name: "Dr. Okafor", status: "online" as const, cases: 2 },
-];
+const REFRESH_INTERVAL = 5000;
 
 function getGreeting(): string {
   const h = new Date().getHours();
@@ -29,14 +24,21 @@ function getGreeting(): string {
 
 export default function DashboardPage() {
   const [cases, setCases] = useState<Case[]>([]);
+  const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    getCases().then((data) => {
-      setCases(data);
-      setLoading(false);
-    });
+  const fetchData = useCallback(async () => {
+    const [casesData, doctorsData] = await Promise.all([getCases(), getDoctors()]);
+    setCases(casesData);
+    setDoctors(doctorsData);
+    setLoading(false);
   }, []);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
   if (loading) return <LoadingSpinner text="Loading dashboard..." />;
 
@@ -66,9 +68,15 @@ export default function DashboardPage() {
       {/* Header */}
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="text-2xl font-heading font-bold text-gray-900">
-            {getGreeting()}, Doctor
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-heading font-bold text-gray-900">
+              {getGreeting()}, Doctor
+            </h1>
+            <span className="flex items-center gap-1.5 bg-green-50 border border-green-200 rounded-full px-2.5 py-0.5">
+              <span className="w-2 h-2 rounded-full bg-triage-green animate-pulse" />
+              <span className="text-[11px] font-bold text-triage-green uppercase tracking-wide">Live</span>
+            </span>
+          </div>
           <p className="text-sm text-gray-500 mt-1">
             {new Date().toLocaleDateString("en-US", {
               weekday: "long",
@@ -162,35 +170,48 @@ export default function DashboardPage() {
             <UserCheck className="w-5 h-5 text-who-blue" />
             Doctor Status
           </h2>
-          <div className="space-y-3">
-            {mockDoctors.map((doc) => (
-              <div key={doc.name} className="flex items-center justify-between py-2">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-600">
-                    {doc.name.split(" ").map((n) => n[0]).join("")}
+          {doctors.length === 0 ? (
+            <div className="text-center py-8 text-gray-400">
+              <UserCheck className="w-8 h-8 mx-auto mb-2 opacity-40" />
+              <p className="text-sm font-medium">No doctors online</p>
+              <p className="text-xs mt-1">Doctors will appear here once registered</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {doctors.map((doc) => (
+                <div key={doc.id} className="flex items-center justify-between py-2">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-600">
+                      {doc.full_name.split(" ").map((n) => n[0]).join("").slice(0, 2)}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">{doc.full_name}</p>
+                      <p className="text-[11px] text-gray-400">
+                        {doc.specialization} &middot; {doc.country_code}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm font-medium text-gray-800">{doc.name}</p>
-                    <p className="text-[11px] text-gray-400">
-                      {doc.cases} active case{doc.cases !== 1 ? "s" : ""}
-                    </p>
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        doc.availability
+                          ? "bg-triage-green animate-pulse"
+                          : "bg-gray-300"
+                      }`}
+                    />
+                    <span className="text-xs text-gray-500">
+                      {doc.availability ? "Available" : "Offline"}
+                    </span>
+                    {doc.verified && (
+                      <span className="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded-full font-semibold ml-1">
+                        Verified
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      doc.status === "online"
-                        ? "bg-triage-green animate-pulse"
-                        : doc.status === "busy"
-                        ? "bg-triage-yellow"
-                        : "bg-gray-300"
-                    }`}
-                  />
-                  <span className="text-xs text-gray-500 capitalize">{doc.status}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Recent Cases */}

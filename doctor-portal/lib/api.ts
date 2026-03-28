@@ -1,4 +1,4 @@
-import { Case, KGNavigationResult, KGStats, HottestPath, ConditionResult } from "@/types";
+import { Case, Doctor, BackpropResult, KGNavigationResult, KGStats, HottestPath, ConditionResult } from "@/types";
 import {
   mockCases,
   mockKGNavigation,
@@ -34,6 +34,30 @@ async function fetchWithFallback<T>(
   }
 }
 
+async function fetchStrict<T>(
+  url: string,
+  options?: RequestInit
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const res = await fetch(url, {
+    ...options,
+    signal: controller.signal,
+    headers: {
+      "Content-Type": "application/json",
+      ...options?.headers,
+    },
+  });
+  clearTimeout(timeout);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(body || `HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
+// --- Cases (graceful fallback to mock when backend is down) ---
+
 export async function getCases(): Promise<Case[]> {
   return fetchWithFallback(`${API_BASE}/cases/patient-cases`, mockCases);
 }
@@ -47,17 +71,53 @@ export async function getCaseQueue(): Promise<Case[]> {
   return fetchWithFallback(`${API_BASE}/cases/queue`, mockCases.filter((c) => c.status === "pending"));
 }
 
-export async function assignDoctor(caseId: string): Promise<{ success: boolean }> {
-  return fetchWithFallback(`${API_BASE}/cases/${caseId}/assign`, { success: true }, { method: "POST" });
+// --- Doctors (live, no mock fallback) ---
+
+export async function getDoctors(): Promise<Doctor[]> {
+  return fetchWithFallback<Doctor[]>(`${API_BASE}/doctors/`, []);
 }
 
-export async function submitResponse(caseId: string, response: string): Promise<{ success: boolean }> {
-  return fetchWithFallback(
+// --- Mutations (strict — throw on failure so UI can display errors) ---
+
+export async function assignDoctor(caseId: string): Promise<{ success: boolean }> {
+  return fetchStrict(`${API_BASE}/cases/${caseId}/assign`, { method: "POST" });
+}
+
+export async function submitResponse(
+  caseId: string,
+  payload: {
+    doctor_id: string;
+    guidance_text: string;
+    is_emergency_referral: boolean;
+    compliance_acknowledged: boolean;
+  }
+): Promise<{ success: boolean }> {
+  return fetchStrict(
     `${API_BASE}/cases/${caseId}/respond`,
-    { success: true },
-    { method: "POST", body: JSON.stringify({ response }) }
+    { method: "POST", body: JSON.stringify(payload) }
   );
 }
+
+export async function backpropagateCase(
+  caseId: string,
+  diagnosis: string,
+  specialty: string
+): Promise<BackpropResult> {
+  return fetchStrict(
+    `${API_BASE}/kg/backpropagate`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        case_id: caseId,
+        doctor_diagnosis: diagnosis,
+        doctor_specialty: specialty,
+        outcome: "resolved",
+      }),
+    }
+  );
+}
+
+// --- KG endpoints (graceful fallback to mock) ---
 
 export async function navigateKG(symptoms: string[]): Promise<KGNavigationResult> {
   return fetchWithFallback(
@@ -83,6 +143,8 @@ export async function getConditions(symptomName: string): Promise<ConditionResul
   const fallback = getMockConditions(symptomName);
   return fetchWithFallback(`${API_BASE}/kg/conditions/${encodeURIComponent(symptomName)}`, fallback);
 }
+
+// --- Utilities ---
 
 export function timeAgo(dateStr: string): string {
   const now = new Date();
