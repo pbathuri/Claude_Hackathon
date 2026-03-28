@@ -7,6 +7,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def is_knowledge_graph_enabled() -> bool:
+    """When False, skip KG initialization and all graph usage in caller/Twilio flows."""
+    return os.getenv("ENABLE_KNOWLEDGE_GRAPH", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 # --- API Keys ---
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -15,6 +25,13 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
 
 # --- Database ---
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./telehealth.db")
+
+# --- Redis (browser Web Speech transcript persistence; optional) ---
+REDIS_URL = os.getenv("REDIS_URL", "")
+BROWSER_STT_TTL_SECONDS = int(os.getenv("BROWSER_STT_TTL_SECONDS", "604800"))  # 7 days
+
+# --- OpenAI (Whisper STT via /caller/stt) ---
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 # --- Claude Model ---
 INTAKE_MODEL = "claude-haiku-4-5-20241022"
