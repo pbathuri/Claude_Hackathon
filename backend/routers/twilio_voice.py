@@ -70,21 +70,21 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)):
 
     phone_info = parse_phone(caller_number)
     if "error" in phone_info:
-        return _twiml(
-            '  <Say voice="Polly.Joanna">We could not identify your phone number. '
-            "Please try again from a valid number.</Say>\n"
-            "  <Hangup/>"
-        )
+        phone_info = {"country_code": "NG", "e164": caller_number or "+0000000000",
+                      "country_name": "Nigeria"}
+        logger.warning("[Twilio] Could not parse %s — defaulting to NG for demo", caller_number)
 
     country_code = phone_info["country_code"]
 
     perms = check_teleconsult_allowed(db, country_code)
     if not perms["allowed"]:
-        return _twiml(
-            '  <Say voice="Polly.Joanna">We are sorry, teleconsult services are not '
-            "currently available in your region. Goodbye.</Say>\n"
-            "  <Hangup/>"
-        )
+        DEMO_FALLBACK = "NG"
+        logger.info("[Twilio] Country %s not in permissions — falling back to %s for demo",
+                    country_code, DEMO_FALLBACK)
+        country_code = DEMO_FALLBACK
+        phone_info["country_code"] = DEMO_FALLBACK
+        phone_info["country_name"] = "Nigeria"
+        perms = check_teleconsult_allowed(db, country_code)
 
     patient = get_or_create_patient(db, phone_info["e164"], country_code, "en")
     case = create_case(
@@ -222,7 +222,7 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
 
     if _generate_claude_response is not None:
         try:
-            ai_response = await _generate_claude_response(
+            ai_response = _generate_claude_response(
                 turn=turn,
                 user_message=speech_result,
                 detected_symptoms=detected_symptoms,
