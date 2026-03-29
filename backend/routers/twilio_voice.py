@@ -309,7 +309,8 @@ async def incoming_call(
     welcome_play = _speak_twiml(welcome_text, voice, base_url)
     ready_play = _gather_ready_play()
 
-    # No <Say> after </Gather>: timeout/empty STT is handled via POST to /twilio/gather (retry same phase).
+    # On timeout (no speech), <Redirect> POSTs to /twilio/gather with empty SpeechResult
+    # so our silence-retry handler runs instead of Twilio re-requesting /twilio/voice.
     return _twiml(
         f'{welcome_play}'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
@@ -318,6 +319,7 @@ async def incoming_call(
         f' language="{gather_lang}">\n'
         f'{ready_play}'
         "  </Gather>\n"
+        '  <Redirect method="POST">/twilio/gather</Redirect>\n'
     )
 
 
@@ -402,6 +404,7 @@ async def gather_speech(
             f' language="{gather_lang}">\n'
             f'{listen_play}'
             "  </Gather>\n"
+            '  <Redirect method="POST">/twilio/gather</Redirect>\n'
         )
 
     session["silence_attempts"] = 0
@@ -555,6 +558,7 @@ async def gather_speech(
             f' language="{gather_lang}">\n'
             f'{listen_play}'
             "  </Gather>\n"
+            '  <Redirect method="POST">/twilio/gather</Redirect>\n'
         )
 
     # Session should not reach here normally (done clears session on submit).

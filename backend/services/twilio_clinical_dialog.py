@@ -31,37 +31,15 @@ _PRO_CHIEF_FALLBACK = (
 
 
 async def warm_post_consent_chief_prompt(*, anthropic_api_key: str, intake_model: str) -> str:
-    """Professional-but-warm first post-consent question (strict length for TTS)."""
-    if not anthropic_api_key:
-        return _PRO_CHIEF_FALLBACK
-    try:
-        import anthropic
+    """Deterministic warm post-consent prompt — no LLM call to keep latency near zero.
 
-        client = anthropic.Anthropic(api_key=anthropic_api_key)
-        r = client.messages.create(
-            model=intake_model,
-            max_tokens=120,
-            system=(
-                "You write one short spoken sentence for a phone triage line. "
-                "Tone: clear, professional, caring. Ask for their main symptom or reason for calling. "
-                "No medical advice. Under 200 characters. English only. No quotes."
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": "Generate the first question after consent to collect chief complaint.",
-                }
-            ],
-        )
-        text = (r.content[0].text or "").strip().replace("\n", " ")
-        if not text:
-            return _PRO_CHIEF_FALLBACK
-        if len(text) > MAX_CHIEF_PROMPT_CHARS:
-            text = text[: MAX_CHIEF_PROMPT_CHARS - 3] + "..."
-        return text
-    except Exception as exc:
-        logger.warning("[Twilio] warm chief prompt failed: %s", exc)
-        return _PRO_CHIEF_FALLBACK
+    Claude is used later in the clinical_dialog phase where the conversation is already open
+    and small latencies are tolerable.
+    """
+    return (
+        "Thank you for your consent. I'm here to help. "
+        "Can you tell me your main symptom or reason for calling today?"
+    )
 
 
 @dataclass
@@ -222,9 +200,10 @@ async def advance_clinical_dialog_step(
         )
 
     try:
+        import asyncio
         import anthropic
 
-        client = anthropic.Anthropic(api_key=anthropic_api_key)
+        client = anthropic.Anthropic(api_key=anthropic_api_key, timeout=10.0)
         chief = (session.get("sq_chief_text") or "").strip()
         sys_prompt = (
             "You are a warm, experienced triage nurse on a phone call. The patient cannot be seen in person. "
@@ -249,12 +228,16 @@ async def advance_clinical_dialog_step(
             f"Latest patient words: {speech[:800]}\n"
             f"Turn {cd_turn} of {MAX_CLINICAL_TURNS}."
         )
-        r = client.messages.create(
-            model=intake_model,
-            max_tokens=500,
-            system=sys_prompt,
-            messages=[{"role": "user", "content": user_block}],
-        )
+
+        def _call_claude():
+            return client.messages.create(
+                model=intake_model,
+                max_tokens=500,
+                system=sys_prompt,
+                messages=[{"role": "user", "content": user_block}],
+            )
+
+        r = await asyncio.wait_for(asyncio.to_thread(_call_claude), timeout=12.0)
         raw = (r.content[0].text or "").strip()
         reply, ex, done_flag = _parse_clinical_json(raw)
         _merge_extract_into_session(session, ex, speech)
