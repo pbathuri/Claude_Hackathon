@@ -89,6 +89,7 @@ def list_doctors(
             "availability": d.availability,
             "verified": d.verified,
             "license_verified": d.license_verified,
+            "license_number": d.license_number,
         }
         for d in doctors
     ]
