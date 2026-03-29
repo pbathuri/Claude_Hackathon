@@ -9,6 +9,18 @@ Provides:
 
 All clinical processing (KG navigation, ICD-11 mapping, triage) runs in English.
 User-facing messages are translated to/from the detected language transparently.
+
+Twilio voice pipeline (order):
+- First non-empty utterance pins `language` (see `detect_language`).
+- User audio is transcribed with `twilio_lang` from `get_language_config` (Gather `language` attribute).
+- STT text is translated to English for the intake state machine and KG.
+- Assistant English replies are translated back with `translate_from_english` before TTS.
+- ElevenLabs (`/twilio/tts-audio`): when configured, `<Play>` receives text already in the user's language
+  (not English). Polly uses the matching `twilio_voice` per language from this module.
+
+Swahili (`sw`): Twilio has limited Swahili STT; config uses `twilio_lang` `en-US` so recognition is English
+  while copy/UI can still be Swahili via translation — expect lower accuracy for Swahili-first callers unless
+  you add a dedicated STT path.
 """
 
 import logging

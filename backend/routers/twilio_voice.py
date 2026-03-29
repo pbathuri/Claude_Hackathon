@@ -2,7 +2,13 @@
 Twilio Voice Webhook router.
 Handles inbound phone calls via Twilio with strict scripted intake:
 name → age → gender → phone confirm → consent → chief symptom →
-body → pain → duration → allergies → medications → delivery, then submit.
+clinical_dialog (KG + Claude follow-ups) → optional body/pain/duration gaps →
+allergies → medications → delivery, then submit.
+
+When <Gather> times out or STT returns nothing, Twilio POSTs to the same action URL
+(`/twilio/gather`) with an empty or missing SpeechResult — we retry the same phase with
+`last_prompt_en` and increment `silence_attempts` (no discouraging "call back when ready"
+after `</Gather>`; the webhook owns the retry loop).
 
 Emergency red-flag detection after consent can short-circuit to submit + advisory hangup.
 """
@@ -10,6 +16,7 @@ import hashlib
 import math
 import os
 import struct
+import time
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request, Depends
@@ -42,10 +49,16 @@ from services.language_service import (
 from config import (
     is_knowledge_graph_enabled,
     ANTHROPIC_API_KEY,
-    ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID,
-    CONVERSATION_MODEL, CONVERSATION_MAX_TOKENS,
+    ELEVENLABS_API_KEY,
+    ELEVENLABS_VOICE_ID,
+    ELEVENLABS_MODEL_ID,
+    CONVERSATION_MODEL,
+    CONVERSATION_MAX_TOKENS,
     INTAKE_MODEL,
 )
+from routers.caller import _build_verbal_disclosure
+from services import session_store
+from services.navigator_store import get_navigator, persist_navigator, clear_navigator
 from services.twilio_intake_flow import (
     GATHER_TIMEOUT_SEC,
     GATHER_SPEECH_TIMEOUT,
@@ -56,11 +69,21 @@ from services.twilio_intake_flow import (
     claude_symptom_summary_and_fill,
     symptoms_from_chief_text,
 )
-from routers.caller import (
-    _build_verbal_disclosure,
-)
-from services import session_store
-from services.navigator_store import get_navigator, persist_navigator, clear_navigator
+
+# Max empty/no-STT attempts before hangup (same-phase retries handled below).
+MAX_SILENCE_ATTEMPTS = 5
+
+
+def _twilio_kg_graph():
+    """Knowledge graph singleton for live clinical_dialog turns; None if disabled or not loaded."""
+    if not is_knowledge_graph_enabled():
+        return None
+    try:
+        from routers import knowledge_graph as kg
+
+        return kg._graph
+    except Exception:
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +287,10 @@ async def incoming_call(
             "language": "en",  # will be updated after first speech
             "intake_phase": "name",
             "caller_e164": phone_info.get("e164", ""),
+            "silence_attempts": 0,
+            "last_prompt_en": "Please say your full name.",
+            "tone_mode": "professional",
+            "question_queue": [],
         },
     )
 
@@ -281,9 +308,8 @@ async def incoming_call(
     )
     welcome_play = _speak_twiml(welcome_text, voice, base_url)
     ready_play = _gather_ready_play()
-    noinput_text = "I didn't catch that. Please call back when you're ready."
-    noinput_play = _speak_twiml(noinput_text, voice, base_url)
 
+    # No <Say> after </Gather>: timeout/empty STT is handled via POST to /twilio/gather (retry same phase).
     return _twiml(
         f'{welcome_play}'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
@@ -292,7 +318,6 @@ async def incoming_call(
         f' language="{gather_lang}">\n'
         f'{ready_play}'
         "  </Gather>\n"
-        f'{noinput_play}'
     )
 
 
@@ -310,6 +335,7 @@ async def gather_speech(
 
     On first speech: detects language and pins it for the rest of the call.
     """
+    t0 = time.perf_counter()
     form = await request.form()
     speech_result = form.get("SpeechResult", "")
     call_sid = form.get("CallSid", "unknown")
@@ -324,6 +350,61 @@ async def gather_speech(
 
     turn = session["turn"]
     country_code = session.get("country_code", "")
+
+    user_lang = session.get("language", "en")
+    lang_cfg = get_language_config(user_lang)
+    voice = lang_cfg["twilio_voice"]
+    gather_lang = lang_cfg["twilio_lang"]
+    base_url = str(request.base_url).rstrip("/")
+
+    speech_stripped = (speech_result or "").strip()
+
+    # ── Empty SpeechResult / timeout: retry same phase (no advance, no empty user line) ──
+    if not speech_stripped:
+        session["silence_attempts"] = session.get("silence_attempts", 0) + 1
+        if session["silence_attempts"] >= MAX_SILENCE_ATTEMPTS:
+            session_store.twilio_session_delete(call_sid)
+            clear_navigator(str(session.get("case_id", "")))
+            bye_en = (
+                "We're having trouble hearing you. Please call again from a quieter place. Goodbye."
+            )
+            spoken = translate_from_english(bye_en, user_lang) if user_lang != "en" else bye_en
+            safe = _escape_xml(_truncate_for_tts(spoken))
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            logger.info(
+                "[Twilio] gather silence cap call=%s phase=%s elapsed_ms=%.1f",
+                call_sid,
+                session.get("intake_phase"),
+                elapsed_ms,
+            )
+            return _twiml(f'  <Say voice="{voice}">{safe}</Say>\n  <Hangup/>')
+
+        last_en = (session.get("last_prompt_en") or "").strip() or (
+            "I didn't catch that. Please repeat."
+        )
+        spoken = translate_from_english(last_en, user_lang) if user_lang != "en" else last_en
+        resp_play = _speak_twiml(spoken, voice, base_url)
+        listen_play = _gather_ready_play()
+        session_store.twilio_session_set(call_sid, session)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.info(
+            "[Twilio] gather no-input retry call=%s phase=%s attempt=%s elapsed_ms=%.1f",
+            call_sid,
+            session.get("intake_phase"),
+            session["silence_attempts"],
+            elapsed_ms,
+        )
+        return _twiml(
+            f'{resp_play}'
+            f'  <Gather input="speech" action="/twilio/gather" method="POST"'
+            f' timeout="{GATHER_TIMEOUT_SEC}" speechTimeout="{GATHER_SPEECH_TIMEOUT}"'
+            f' speechModel="experimental_conversations"'
+            f' language="{gather_lang}">\n'
+            f'{listen_play}'
+            "  </Gather>\n"
+        )
+
+    session["silence_attempts"] = 0
 
     # ── Language detection (once per call; demographics may hold turn=1 several times) ──
     if speech_result and not session.get("language_pinned"):
@@ -345,20 +426,23 @@ async def gather_speech(
 
     session["message_history"].append({"role": "user", "content": english_speech})
 
-    base_url = str(request.base_url).rstrip("/")
-
     # ── Scripted intake (single state machine; one question per Gather) ──
     _phase = session.get("intake_phase", "name")
     if _phase != "done":
         prev_phase = _phase
+        _kg = _twilio_kg_graph()
+        _case_id = str(session.get("case_id") or "")
         result = await advance_twilio_intake_step(
             session,
             english_speech,
             anthropic_api_key=ANTHROPIC_API_KEY,
             intake_model=INTAKE_MODEL,
+            graph=_kg,
+            case_id=_case_id,
         )
         session["intake_phase"] = result.next_phase
         session["message_history"].append({"role": "assistant", "content": result.reply_en})
+        session["last_prompt_en"] = result.reply_en
         session["turn"] = turn + 1
 
         if prev_phase == "consent" and result.next_phase == "sq_chief":
@@ -455,10 +539,14 @@ async def gather_speech(
         )
         resp_play = _speak_twiml(spoken_response, voice, base_url)
         listen_play = _gather_ready_play()
-        no_input_msg = "I didn't catch that. Please call back when you're ready."
-        if user_lang != "en":
-            no_input_msg = translate_from_english(no_input_msg, user_lang)
-        noinput_play = _speak_twiml(no_input_msg, voice, base_url)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.info(
+            "[Twilio] gather ok call=%s phase %s→%s elapsed_ms=%.1f",
+            call_sid,
+            prev_phase,
+            result.next_phase,
+            elapsed_ms,
+        )
         return _twiml(
             f'{resp_play}'
             f'  <Gather input="speech" action="/twilio/gather" method="POST"'
@@ -467,7 +555,6 @@ async def gather_speech(
             f' language="{gather_lang}">\n'
             f'{listen_play}'
             "  </Gather>\n"
-            f'{noinput_play}'
         )
 
     # Session should not reach here normally (done clears session on submit).

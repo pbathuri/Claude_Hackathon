@@ -177,16 +177,26 @@ async def advance_twilio_intake_step(
     *,
     anthropic_api_key: str,
     intake_model: str,
+    graph: Any | None = None,
+    case_id: str | None = None,
 ) -> IntakeStepResult:
     """
     One step per Twilio Gather callback. Mutates session.
+    Pre-consent phases use concise professional copy; post-consent uses supportive / KG+Claude dialog.
     """
     phase = session.get("intake_phase", "name")
     speech = (english_speech or "").strip()
     e164 = session.get("caller_e164", "") or ""
+    cid = case_id or str(session.get("case_id") or "")
 
     if phase == "name":
-        session["patient_name"] = speech[:200] if speech else "Not provided"
+        if not speech:
+            return IntakeStepResult(
+                "I didn't catch your name. Please say your full name clearly.",
+                "name",
+                "gather_next",
+            )
+        session["patient_name"] = speech[:200]
         return IntakeStepResult(
             "How old are you? Please say your age.",
             "age",
@@ -209,6 +219,12 @@ async def advance_twilio_intake_step(
         )
 
     if phase == "gender":
+        if not speech:
+            return IntakeStepResult(
+                "I didn't catch that. Are you male or female? Please say male or female.",
+                "gender",
+                "gather_next",
+            )
         session["patient_gender"] = parse_gender(speech)
         spoken_num = format_e164_for_speech(e164)
         return IntakeStepResult(
@@ -264,11 +280,14 @@ async def advance_twilio_intake_step(
         yn = parse_yes_no(speech)
         if yn is True:
             session["intake_consent_granted"] = True
-            return IntakeStepResult(
-                "What is your main symptom or reason for calling today?",
-                "sq_chief",
-                "gather_next",
+            session["tone_mode"] = "supportive"
+            from services.twilio_clinical_dialog import warm_post_consent_chief_prompt
+
+            chief_q = await warm_post_consent_chief_prompt(
+                anthropic_api_key=anthropic_api_key,
+                intake_model=intake_model,
             )
+            return IntakeStepResult(chief_q, "sq_chief", "gather_next")
         if yn is False:
             return IntakeStepResult(
                 "Understood. Your information will not be stored. Thank you for calling. Goodbye.",
@@ -282,13 +301,42 @@ async def advance_twilio_intake_step(
         )
 
     if phase == "sq_chief":
-        session["sq_chief_text"] = speech[:500] if speech else "Not specified"
+        if not speech:
+            return IntakeStepResult(
+                "I didn't catch that. What is your main symptom or reason for calling today?",
+                "sq_chief",
+                "gather_next",
+            )
+        session["sq_chief_text"] = speech[:500]
         session["collected_symptoms"] = symptoms_from_chief_text(speech)
-        return IntakeStepResult(
-            "What part of your body is affected? For example: chest, head, abdomen, or back.",
-            "sq_body",
-            "gather_next",
+        session["cd_turn"] = 0
+        session.setdefault("question_queue", [])
+        from services.twilio_clinical_dialog import advance_clinical_dialog_step, clinical_sufficiency_met
+
+        out = await advance_clinical_dialog_step(
+            session,
+            speech,
+            anthropic_api_key=anthropic_api_key,
+            intake_model=intake_model,
+            graph=graph,
+            case_id=cid,
         )
+        session["clinical_sufficiency"] = {"met": clinical_sufficiency_met(session)}
+        return out
+
+    if phase == "clinical_dialog":
+        from services.twilio_clinical_dialog import advance_clinical_dialog_step, clinical_sufficiency_met
+
+        result = await advance_clinical_dialog_step(
+            session,
+            speech,
+            anthropic_api_key=anthropic_api_key,
+            intake_model=intake_model,
+            graph=graph,
+            case_id=cid,
+        )
+        session["clinical_sufficiency"] = {"met": clinical_sufficiency_met(session)}
+        return result
 
     if phase == "sq_body":
         session["twilio_stored_body_area"] = extract_body_area_from_speech(speech) or (speech or "").strip()[:120]

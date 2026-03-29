@@ -102,9 +102,15 @@ async def cases_stream():
         while True:
             db = SessionLocal()
             try:
+                # Count cases in the doctor queue pipeline (in-call → intake done → awaiting doctor).
+                # Including "open" makes SSE totals change as soon as a call starts, not only after hangup.
                 pending = (
                     db.query(Case)
-                    .filter(Case.status.in_(["pending", "intake_complete"]))
+                    .filter(
+                        Case.status.in_(
+                            ["open", "intake_complete", "pending"],
+                        )
+                    )
                     .count()
                 )
                 total = db.query(Case).count()
