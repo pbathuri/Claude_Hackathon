@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>WHO Health Access — Caller</title>
+<title>WHO Health Access — AI Telehealth</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -124,7 +124,7 @@ body{display:flex;flex-direction:column}
 <!-- Emergency Overlay -->
 <div class="emergency-overlay" id="emergencyOverlay">
   <h1>EMERGENCY</h1>
-  <p>Call <strong>112</strong> / <strong>911</strong> immediately</p>
+  <p id="emergencyText">Call <strong>112</strong> / <strong>911</strong> immediately</p>
   <button class="btn-dismiss" onclick="dismissEmergency()">I understand — Continue</button>
 </div>
 
@@ -139,14 +139,22 @@ body{display:flex;flex-direction:column}
 
 <!-- Dialer Screen -->
 <div class="dialer" id="dialerScreen">
-  <div class="dialer-title">Start a Health Call</div>
-  <div class="dialer-sub">Speak with an AI health assistant. Your symptoms will be assessed and routed to a qualified physician.</div>
+  <div class="dialer-title">WHO Health Access</div>
+  <div class="dialer-sub">AI-powered multilingual telehealth. Describe your symptoms in any language — your case will be triaged and routed to a qualified physician in real time.</div>
   <div class="phone-row">
     <select class="country-select" id="countrySelect">
-      <option value="+234">&#x1F1F3;&#x1F1EC; +234</option>
-      <option value="+254">&#x1F1F0;&#x1F1EA; +254</option>
-      <option value="+91">&#x1F1EE;&#x1F1F3; +91</option>
-      <option value="+63">&#x1F1F5;&#x1F1ED; +63</option>
+      <option value="+91">🇮🇳 India +91</option>
+      <option value="+63">🇵🇭 Philippines +63</option>
+      <option value="+254">🇰🇪 Kenya +254</option>
+      <option value="+234">🇳🇬 Nigeria +234</option>
+      <option value="+1">🇺🇸 US +1</option>
+      <option value="+44">🇬🇧 UK +44</option>
+      <option value="+49">🇩🇪 Germany +49</option>
+      <option value="+33">🇫🇷 France +33</option>
+      <option value="+55">🇧🇷 Brazil +55</option>
+      <option value="+52">🇲🇽 Mexico +52</option>
+      <option value="+966">🇸🇦 Saudi +966</option>
+      <option value="+92">🇵🇰 Pakistan +92</option>
     </select>
     <input class="phone-input" id="phoneInput" type="tel" placeholder="Phone number" maxlength="12">
   </div>
@@ -172,16 +180,19 @@ body{display:flex;flex-direction:column}
   </div>
   <div class="transcript-preview" id="transcriptPreview"></div>
   <div class="input-bar" id="inputBar" style="flex-wrap:wrap">
-    <select class="country-select" id="speechLang" title="Speech language (browser STT)" style="width:auto;min-width:120px;font-size:13px">
-      <option value="en-US">EN</option>
-      <option value="es-ES">ES</option>
-      <option value="fr-FR">FR</option>
-      <option value="de-DE">DE</option>
-      <option value="hi-IN">HI</option>
-      <option value="pt-BR">PT</option>
-      <option value="ar-SA">AR</option>
-      <option value="zh-CN">ZH</option>
-      <option value="auto">Auto (Whisper)</option>
+    <select class="country-select" id="speechLang" title="Language" style="width:auto;min-width:120px;font-size:13px" onchange="onLanguageChange(this.value)">
+      <option value="en-US">🌐 English</option>
+      <option value="hi-IN">हिन्दी Hindi</option>
+      <option value="tl-PH">Filipino</option>
+      <option value="sw-KE">Kiswahili</option>
+      <option value="es-ES">Español</option>
+      <option value="fr-FR">Français</option>
+      <option value="ar-SA">العربية</option>
+      <option value="zh-CN">中文</option>
+      <option value="pt-BR">Português</option>
+      <option value="de-DE">Deutsch</option>
+      <option value="ha-NG">Hausa</option>
+      <option value="yo-NG">Yorùbá</option>
     </select>
     <button class="btn-icon btn-cam" id="btnCam" onclick="openCamera()" title="Upload photo">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
@@ -309,8 +320,21 @@ async function startCall() {
         banner.innerHTML = `<strong>Capability Disclosure:</strong> ${sessionData.verbal_disclosure}`;
       }
       readyTone();
-      addMessage('ai', 'Hello! I\'m your AI health assistant. Please describe your symptoms — you can speak or type.');
-      speak('Hello! I\'m your AI health assistant. Please describe your symptoms.');
+      const lang = (document.getElementById('speechLang')?.value || 'en-US').split('-')[0];
+      const greetings = {
+        en: 'Hello! Please describe your symptoms.',
+        es: '¡Hola! Por favor describa sus síntomas.',
+        fr: 'Bonjour ! Veuillez décrire vos symptômes.',
+        hi: 'नमस्ते! कृपया अपने लक्षण बताएं।',
+        pt: 'Olá! Por favor descreva seus sintomas.',
+        ar: 'مرحباً! يرجى وصف أعراضك.',
+        zh: '你好！请描述您的症状。',
+        de: 'Hallo! Bitte beschreiben Sie Ihre Symptome.',
+        sw: 'Habari! Tafadhali eleza dalili zako.',
+      };
+      const greeting = greetings[lang] || greetings.en;
+      addMessage('ai', greeting);
+      speak(greeting);
     }, 1500);
   } catch (e) {
     document.getElementById('connectingScreen').classList.remove('active');
@@ -362,7 +386,7 @@ async function processAITurn(userMessage) {
         turn_number: turnNumber,
         collected_symptoms: collectedSymptoms,
         message_history: messageHistory,
-        language: 'en',
+        language: (document.getElementById('speechLang')?.value || 'en-US').split('-')[0] || 'en',
       }),
     });
     const data = await res.json();
@@ -374,6 +398,10 @@ async function processAITurn(userMessage) {
     if (data.body_area_extracted) extractedBodyArea = data.body_area_extracted;
 
     if (data.is_emergency) {
+      const cc = document.getElementById('countrySelect').value;
+      const emergNums = {'+91':'112','+63':'911','+254':'999','+234':'112','+1':'911','+44':'999','+49':'112','+33':'15','+55':'192','+52':'911','+966':'997','+92':'1122'};
+      const num = emergNums[cc] || '112';
+      document.getElementById('emergencyText').innerHTML = `Call <strong>${num}</strong> immediately`;
       document.getElementById('emergencyOverlay').classList.add('active');
     }
 
@@ -612,6 +640,7 @@ async function speak(text) {
       document.getElementById('speakingBar').classList.remove('active');
       URL.revokeObjectURL(url);
       currentAudio = null;
+      beep(660, 80); setTimeout(() => beep(880, 100), 100);
     };
     currentAudio.onerror = () => {
       isSpeaking = false;
@@ -631,6 +660,7 @@ async function speak(text) {
       utter.onend = () => {
         isSpeaking = false;
         document.getElementById('speakingBar').classList.remove('active');
+        beep(660, 80); setTimeout(() => beep(880, 100), 100);
       };
       synth.speak(utter);
     } else {
@@ -667,6 +697,25 @@ async function handleImageUpload(input) {
 function dismissEmergency() {
   document.getElementById('emergencyOverlay').classList.remove('active');
 }
+
+/* ── Language switch ── */
+function onLanguageChange(val) {
+  if (recognition) {
+    recognition.lang = val === 'auto' ? 'en-US' : val;
+  }
+  const langName = document.getElementById('speechLang').selectedOptions[0]?.textContent?.trim() || val;
+  if (caseId) addMessage('system', `Language: ${langName}`);
+}
+
+/* ── Auto-select language from country ── */
+document.getElementById('countrySelect').addEventListener('change', function() {
+  const langMap = {'+91':'hi-IN','+63':'tl-PH','+254':'sw-KE','+234':'en-US','+1':'en-US','+44':'en-US','+49':'de-DE','+33':'fr-FR','+55':'pt-BR','+52':'es-ES','+966':'ar-SA','+92':'en-US'};
+  const langSel = document.getElementById('speechLang');
+  const suggested = langMap[this.value];
+  if (suggested && langSel) {
+    langSel.value = suggested;
+  }
+});
 
 /* ── Init voices ── */
 if (synth) synth.onvoiceschanged = () => synth.getVoices();

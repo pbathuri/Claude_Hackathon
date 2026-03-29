@@ -276,20 +276,18 @@ async def incoming_call(
     gather_lang = lang_cfg["twilio_lang"]
 
     base_url = str(request.base_url).rstrip("/")
-    welcome_text = f"Welcome to the WHO Health Access Service. {shortened}"
+    welcome_text = f"Welcome to the WHO Health Access Service. {shortened} Please describe your symptoms."
     welcome_play = _speak_twiml(welcome_text, voice, base_url)
-    ask_text = "Please describe your main symptoms. What brings you to call today?"
-    ask_play = _speak_twiml(ask_text, voice, base_url)
+    ready_play = _gather_ready_play()
     noinput_text = "I didn't catch that. Please call back when you're ready."
     noinput_play = _speak_twiml(noinput_text, voice, base_url)
 
     return _twiml(
         f'{welcome_play}'
-        '  <Pause length="1"/>\n'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
         f' speechTimeout="auto" speechModel="experimental_conversations"'
         f' language="{gather_lang}">\n'
-        f'{ask_play}'
+        f'{ready_play}'
         "  </Gather>\n"
         f'{noinput_play}'
     )

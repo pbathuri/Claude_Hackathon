@@ -427,16 +427,23 @@ TRIAGE_TO_FRONTEND_URGENCY = {
 
 
 def _frontend_case_status(case_status: str | None) -> str:
-    """Map DB case.status to doctor-portal filter badges (pending | assigned | resolved +)."""
+    """Map DB case.status to doctor-portal filter badges.
+
+    Portal expects: pending_review, assigned, responded, escalated, closed.
+    """
     if not case_status:
-        return "pending"
-    if case_status == "in_progress":
-        return "assigned"
-    if case_status in ("open", "intake_complete"):
-        return "pending"
-    if case_status in ("closed",):
-        return "resolved"
-    return case_status
+        return "pending_review"
+    _MAP = {
+        "open": "pending_review",
+        "intake_complete": "pending_review",
+        "pending": "pending_review",
+        "assigned": "assigned",
+        "in_progress": "assigned",
+        "resolved": "responded",
+        "escalated": "escalated",
+        "closed": "closed",
+    }
+    return _MAP.get(case_status, case_status)
 
 
 def _kg_stored_to_portal(intake: dict) -> dict | None:

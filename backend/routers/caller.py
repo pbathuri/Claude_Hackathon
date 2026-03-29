@@ -1015,11 +1015,12 @@ async def ai_conversation_turn(req: AITurnRequest):
     """
     # ── 0. Language detection and translation ──
     user_lang = req.language
-    if req.turn_number <= 1 or user_lang == "auto":
-        detected = detect_language(req.user_message)
-        if detected != "en":
-            user_lang = detected
-            kg_logger.info("[AI Turn] Detected language: %s for case %s", user_lang, req.case_id)
+    detected = detect_language(req.user_message)
+    if detected != "en":
+        user_lang = detected
+        kg_logger.info("[AI Turn] Detected language: %s for case %s", user_lang, req.case_id)
+    elif user_lang in ("auto", ""):
+        user_lang = "en"
     session_store.case_language_set(req.case_id, user_lang)
 
     # Translate to English for all clinical processing
