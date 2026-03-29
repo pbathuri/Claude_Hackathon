@@ -828,25 +828,55 @@ def _generate_claude_response(
             "If you already asked about a topic, move on to a different aspect."
         )
 
+    # Build a structured intake progression plan so Claude knows what to ask next
+    info_collected = []
+    info_needed = []
+    if all_symptoms:
+        info_collected.append(f"Symptoms: {', '.join(all_symptoms)}")
+    else:
+        info_needed.append("main symptoms")
+
+    # Check what we still need
+    has_duration = any("day" in m.get("content", "").lower() or "week" in m.get("content", "").lower()
+                       or "hour" in m.get("content", "").lower() or "month" in m.get("content", "").lower()
+                       for m in message_history if m.get("role") == "user")
+    has_severity = any(c.isdigit() for m in message_history for c in m.get("content", "") if m.get("role") == "user")
+    has_history = any(kw in " ".join(m.get("content", "") for m in message_history if m.get("role") == "user").lower()
+                      for kw in ("diabetes", "asthma", "hypertension", "medication", "medicine", "allergy", "allergic", "history", "condition"))
+
+    if has_duration:
+        info_collected.append("duration mentioned")
+    else:
+        info_needed.append("how long they've had symptoms")
+    if has_severity:
+        info_collected.append("severity mentioned")
+    else:
+        info_needed.append("severity on 1-10 scale")
+    if has_history:
+        info_collected.append("medical history touched on")
+    else:
+        info_needed.append("medical history, medications, allergies")
+
+    progress_block = ""
+    if info_collected:
+        progress_block += f"ALREADY COLLECTED: {'; '.join(info_collected)}\n"
+    if info_needed:
+        progress_block += f"STILL NEED TO ASK ABOUT: {'; '.join(info_needed)}\n"
+    progress_block += f"Turn {turn_number} of {MAX_TURNS_BEFORE_COMPLETE} max.\n"
+
     system_prompt = (
-        "You are a WHO-aligned health assistant conducting a symptom intake "
-        "conversation over the phone. Your role is to gather symptom information "
-        "to prepare a case for a qualified physician.\n\n"
-        "CRITICAL GUARDRAILS:\n"
-        "- You are NOT a doctor. Do NOT diagnose conditions.\n"
-        "- Do NOT prescribe treatments or medications.\n"
-        "- Do NOT interpret test results.\n"
-        "- Always remind the patient that a qualified physician will review their case.\n"
-        "- Be empathetic, patient, and use simple language.\n"
-        "- RESPOND IN ENGLISH ONLY (translation is handled separately).\n\n"
+        "You are a warm, empathetic health assistant conducting a symptom intake "
+        "phone call. You gather information so a real physician can review the case.\n\n"
+        "RULES:\n"
+        "- You are NOT a doctor. Never diagnose, prescribe, or speculate.\n"
+        "- Keep each response to 1-2 short sentences. This is a phone call — be brief.\n"
+        "- NEVER repeat a question or phrase from a previous turn.\n"
+        "- Acknowledge what the patient just said, then ask ONE new question.\n"
+        "- Progress through the intake: symptoms → duration → severity → history → medications → allergies.\n"
+        "- RESPOND IN ENGLISH ONLY.\n\n"
+        f"INTAKE PROGRESS:\n{progress_block}\n"
         f"{context_header}:\n{kg_block}\n\n"
-        "CONVERSATION RULES:\n"
-        f"- Turn number: {turn_number}\n"
-        "- Keep responses concise (2-3 sentences max).\n"
         f"{followup_rule}"
-        "- Acknowledge what the patient has shared before asking the next question.\n"
-        "- If this is turn 1, greet the patient warmly and ask about their main concern.\n"
-        "- NEVER repeat a question you already asked. Progress the conversation forward."
         f"{anti_rep}{emergency_line}{completion_line}"
     )
 

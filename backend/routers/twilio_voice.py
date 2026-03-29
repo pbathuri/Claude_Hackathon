@@ -414,33 +414,55 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
         _call_sessions.pop(call_sid, None)
 
         emerg_msg = build_emergency_message(country_code, user_lang, emergency_flags)
-        emerg_play = _speak_twiml(emerg_msg, voice, base_url)
+        safe_emerg = _escape_xml(_truncate_for_tts(emerg_msg))
         return _twiml(
-            f'{emerg_play}'
+            f'  <Say voice="{voice}">{safe_emerg}</Say>\n'
             "  <Hangup/>"
         )
 
     # ── 8. Complete → submit case + summary + hangup ─────────────────────
     if should_complete:
+        submit_ok = False
         try:
             await _submit_twilio_case(db, session)
+            submit_ok = True
+            logger.info("[Twilio] Case %s submitted successfully", session.get("case_id"))
         except Exception as exc:
-            logger.error("[Twilio] Case submission failed: %s", exc)
+            logger.error("[Twilio] Case submission failed: %s", exc, exc_info=True)
+            # Retry once with a fresh DB session
+            try:
+                from database import SessionLocal
+                retry_db = SessionLocal()
+                await _submit_twilio_case(retry_db, session)
+                retry_db.close()
+                submit_ok = True
+                logger.info("[Twilio] Case %s submitted on retry", session.get("case_id"))
+            except Exception as exc2:
+                logger.error("[Twilio] Retry also failed: %s", exc2)
         _call_sessions.pop(call_sid, None)
 
-        completion_msg = (
-            f"Your case has been submitted. A physician will review "
-            f"{', '.join(all_symptoms) if all_symptoms else 'your symptoms'} "
-            "and respond shortly. If your condition worsens, please seek emergency care. Goodbye."
-        )
+        symptom_list = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
+        if submit_ok:
+            completion_msg = (
+                f"Thank you for sharing this information. I've noted {symptom_list}. "
+                "Your case has been submitted and a physician will review it shortly. "
+                "If your condition worsens, please seek emergency care. Goodbye."
+            )
+        else:
+            completion_msg = (
+                f"Thank you. I've noted {symptom_list}. "
+                "We experienced a technical issue but your information has been recorded. "
+                "A physician will review it. If your condition worsens, seek emergency care. Goodbye."
+            )
         if user_lang != "en":
             completion_msg = translate_from_english(completion_msg, user_lang)
-        complete_play = _speak_twiml(completion_msg, voice, base_url)
 
+        # Use <Say> for completion to avoid TTS timeout causing "application error"
+        safe_completion = _escape_xml(_truncate_for_tts(completion_msg))
         return _twiml(
             f'{resp_play}'
             '  <Pause length="1"/>\n'
-            f'{complete_play}'
+            f'  <Say voice="{voice}">{safe_completion}</Say>\n'
             "  <Hangup/>"
         )
 
@@ -470,11 +492,14 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
 
 async def _submit_twilio_case(db: Session, session: dict) -> None:
     """Build intake data from the voice session state and finalize the case."""
+    import re
+
     case_id = session["case_id"]
     symptoms = session["collected_symptoms"]
     history = session["message_history"]
 
     transcript = " | ".join(f"{m['role']}: {m['content']}" for m in history)
+    user_text = " ".join(m["content"] for m in history if m.get("role") == "user")
 
     all_text = " ".join(symptoms) + " " + transcript
     is_emergency = check_emergency_keywords(all_text)
@@ -486,15 +511,41 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
 
     if is_emergency:
         triage_level = "RED"
-    elif red_flags:
+    elif len(symptoms) >= 4 or red_flags:
         triage_level = "YELLOW"
     else:
         triage_level = "GREEN"
 
+    # Extract duration from user messages
+    duration = ""
+    dur_match = re.search(r'(\d+\s*(?:days?|weeks?|months?|hours?|years?))', user_text, re.IGNORECASE)
+    if dur_match:
+        duration = dur_match.group(1)
+    else:
+        since_match = re.search(r'since\s+(yesterday|last\s+\w+)', user_text, re.IGNORECASE)
+        if since_match:
+            duration = f"since {since_match.group(1)}"
+
+    # Extract severity from user messages
+    severity = 5
+    sev_match = re.search(r'(?:severity|pain|level|scale).*?(\d+)|(\d+)\s*(?:out of|/)\s*10', user_text, re.IGNORECASE)
+    if sev_match:
+        raw = next((g for g in sev_match.groups() if g), None)
+        if raw and 1 <= int(raw) <= 10:
+            severity = int(raw)
+
+    # Build concise clinical summary from symptoms + context
+    symptom_str = ", ".join(symptoms) if symptoms else "unspecified symptoms"
+    summary = f"Patient reports: {symptom_str}."
+    if duration:
+        summary += f" Duration: {duration}."
+    if severity != 5:
+        summary += f" Severity: {severity}/10."
+
     intake_data = {
         "main_symptom": symptoms[0] if symptoms else "",
-        "duration": "",
-        "severity": 5,
+        "duration": duration,
+        "severity": severity,
         "associated_symptoms": symptoms[1:] if len(symptoms) > 1 else [],
         "medical_history": [],
         "current_medications": [],
@@ -503,7 +554,7 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
         "recommended_specialty": "general",
         "body_area": "",
         "red_flag_indicators": red_flags,
-        "patient_summary": transcript[:500],
+        "patient_summary": summary,
     }
 
     # ICD-11 mapping (non-blocking)
