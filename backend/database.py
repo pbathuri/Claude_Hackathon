@@ -22,7 +22,7 @@ else:
     _engine_kwargs["max_overflow"] = int(os.environ.get("DB_MAX_OVERFLOW", "10"))
     _engine_kwargs["pool_pre_ping"] = True
     # Supabase and many cloud Postgres providers require TLS
-    if "supabase.co" in _db_lower and "sslmode=" not in _db_lower:
+    if ("supabase.co" in _db_lower or "supabase.com" in _db_lower) and "sslmode=" not in _db_lower:
         _engine_kwargs["connect_args"] = {"sslmode": "require"}
     elif os.environ.get("DB_SSLMODE", "").strip():
         _engine_kwargs["connect_args"] = {"sslmode": os.environ["DB_SSLMODE"].strip()}

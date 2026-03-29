@@ -40,7 +40,7 @@ def _connect_args(url: str) -> dict:
     if url.startswith("sqlite"):
         return {"check_same_thread": False}
     ul = url.lower()
-    if "supabase.co" in ul and "sslmode=" not in ul:
+    if ("supabase.co" in ul or "supabase.com" in ul) and "sslmode=" not in ul:
         return {"sslmode": "require"}
     if os.environ.get("DB_SSLMODE", "").strip():
         return {"sslmode": os.environ["DB_SSLMODE"].strip()}

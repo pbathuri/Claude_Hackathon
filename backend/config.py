@@ -47,7 +47,7 @@ def _validate_database_url(url: str) -> None:
             "In Supabase Dashboard: Project Settings → Database → Connection string → URI "
             "(use 'Transaction' or 'Session' mode; add ?sslmode=require if required)."
         )
-    if "supabase.co" in lower and not (
+    if ("supabase.co" in lower or "supabase.com" in lower) and not (
         lower.startswith("postgresql") or lower.startswith("postgres://")
     ):
         raise ValueError(

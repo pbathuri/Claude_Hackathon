@@ -16,17 +16,30 @@ Supabase **does not show** your existing Postgres password again after creation 
 
 Then use **Connection string** → **URI** on the same page: it will show `postgresql://postgres.[ref]:[YOUR-PASSWORD]@...` or `postgresql://postgres:[YOUR-PASSWORD]@db.<ref>.supabase.co:5432/postgres` — paste your real password in place of the placeholder. If the password contains `@`, `#`, `/`, or `%`, [URL-encode](https://developer.mozilla.org/en-US/docs/Glossary/Percent-encoding) those characters in the URI or use a password without them.
 
-**Correct database name in the path is `postgres` (full word),** not `postgre`:
+**Correct database name in the path is `postgres` (full word),** not `postgre`.
 
-`postgresql://postgres:YOUR_DB_PASSWORD@db.alknctbyuwwhgejvjyvw.supabase.co:5432/postgres`
+### Use the **pooler** URI (not the direct connection)
 
-### Finish the connection URI
+The **direct** connection host (`db.<ref>.supabase.co`, port 5432) resolves to **IPv6 only**. Render's free tier does **not** have IPv6 connectivity, so you'll see:
 
-1. On the same **Database** settings page, under **Connection string**, choose **URI** and **Direct connection** (or **Session** mode if offered). Copy the string that starts with **`postgresql://`** or **`postgres://`**, and substitute your real database password for the placeholder.
-2. **Render (long‑running Uvicorn):** port **5432** / host `db.<project-ref>.supabase.co` is appropriate for an always-on service. For **serverless** or many short-lived workers, prefer **pooling** on port **6543** (Transaction mode).
-3. If the URI has no `sslmode`, append **`?sslmode=require`** (the app also forces TLS for `*.supabase.co` when `sslmode` is missing).
+> `connection to server at "db.alknctbyuwwhgejvjyvw.supabase.co" (2600:…) … failed: Network is unreachable`
 
-Paste that full URI into Render → **Environment** → `DATABASE_URL` (and into local `backend/.env` if you use Postgres locally).
+**Fix:** use the Supabase **connection pooler** (Supavisor) instead. It resolves to **IPv4**.
+
+1. Supabase Dashboard → **Settings** → **Database** → **Connection string** → **URI**.
+2. Switch the mode dropdown from **Direct connection** to **Transaction** (recommended) or **Session**.
+3. The URI changes to something like:
+
+   `postgresql://postgres.alknctbyuwwhgejvjyvw:[YOUR-PASSWORD]@aws-0-us-west-1.pooler.supabase.com:6543/postgres`
+
+   Note the differences from direct:
+   - **User** is `postgres.alknctbyuwwhgejvjyvw` (dot-separated, not colon-separated ref)
+   - **Host** is `aws-0-<region>.pooler.supabase.com` (not `db.<ref>.supabase.co`)
+   - **Port** is `6543` (not `5432`)
+
+4. If the URI has no `sslmode`, append **`?sslmode=require`** (the app also forces TLS for `*.supabase.co` when `sslmode` is missing). The pooler hostname contains `supabase.com`, so also add this check — or just always append the param.
+
+Paste that full pooler URI into Render → **Environment** → `DATABASE_URL` (and into local `backend/.env` if you use Postgres locally).
 
 If `DATABASE_URL` is an `https://` URL, the app will **fail at startup** with a clear error in logs.
 
