@@ -44,12 +44,8 @@ from routers.caller import (
     _build_verbal_disclosure,
     _generate_fallback_message,
     _extract_symptoms_from_text,
+    _generate_claude_response,
 )
-
-try:
-    from routers.caller import _generate_claude_response
-except ImportError:
-    _generate_claude_response = None
 
 logger = logging.getLogger(__name__)
 
@@ -153,11 +149,14 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)):
     gather_lang = lang_cfg["twilio_lang"]
 
     safe_disc = _escape_xml(_truncate_for_tts(shortened))
+    # speechTimeout=auto + experimental_conversations: natural pauses + better dialogue STT
+    # (production-hardening branch; fixes cut-off speech vs fixed 3s window)
     return _twiml(
         f'  <Say voice="{voice}">Welcome to the WHO Health Access Service. {safe_disc}</Say>\n'
         '  <Pause length="1"/>\n'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
-        f' speechTimeout="3" timeout="10" language="{gather_lang}">\n'
+        f' speechTimeout="auto" speechModel="experimental_conversations"'
+        f' language="{gather_lang}">\n'
         f'    <Say voice="{voice}">Please describe your main symptoms.'
         " What brings you to call today?</Say>\n"
         "  </Gather>\n"
@@ -288,25 +287,32 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
     ai_response = None
     prior_history = session["message_history"][:-1]
 
-    if _generate_claude_response is not None:
-        try:
-            ai_response = _generate_claude_response(
-                turn_number=turn,
-                user_message=english_speech,
-                all_symptoms=all_symptoms,
-                suggested_questions=suggested_questions,
-                activated_conditions=activated_conditions,
-                body_systems=body_systems,
-                is_emergency=is_emergency,
-                emergency_flags=emergency_flags,
-                should_complete=should_complete,
-                message_history=prior_history,
-                use_knowledge_graph=graph is not None,
-                country_code=country_code,
-                previous_ai_messages=session.get("ai_messages", []),
-            )
-        except Exception as exc:
-            logger.warning("[Twilio] Claude response failed, using fallback: %s", exc)
+    try:
+        ai_response = _generate_claude_response(
+            turn_number=turn,
+            user_message=english_speech,
+            all_symptoms=all_symptoms,
+            suggested_questions=suggested_questions,
+            activated_conditions=activated_conditions,
+            body_systems=body_systems,
+            is_emergency=is_emergency,
+            emergency_flags=emergency_flags,
+            should_complete=should_complete,
+            message_history=prior_history,
+            use_knowledge_graph=graph is not None,
+            country_code=country_code,
+            previous_ai_messages=session.get("ai_messages", []),
+        )
+        logger.info(
+            "[Twilio] Claude+KG turn %s case=%s symptoms=%d graph=%s",
+            turn,
+            session.get("case_id"),
+            len(all_symptoms),
+            graph is not None,
+        )
+    except Exception as exc:
+        logger.warning("[Twilio] Claude response failed, using fallback: %s", exc)
+        ai_response = None
 
     if ai_response is None:
         ai_response = _generate_fallback_message(
@@ -391,10 +397,11 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
     return _twiml(
         f'  <Say voice="{voice}">{safe_resp}</Say>\n'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
-        f' speechTimeout="3" timeout="10" language="{gather_lang}">\n'
+        f' speechTimeout="auto" speechModel="experimental_conversations"'
+        f' language="{gather_lang}">\n'
         f'    <Say voice="{voice}">{safe_listen}</Say>\n'
         "  </Gather>\n"
-        f'  <Redirect method="POST">/twilio/gather</Redirect>'
+        f'  <Say voice="{voice}">{safe_noinput}</Say>'
     )
 
 
