@@ -764,38 +764,42 @@ def _generate_claude_response(
     Includes anti-repetition logic and localized emergency numbers.
     Response is always in English (translation to user language happens in the caller).
     """
+    # Filter KG suggested questions to exclude ones already asked
+    asked_qs = set()
+    if previous_ai_messages:
+        for msg in previous_ai_messages:
+            asked_qs.add(msg.lower()[:80])
+    fresh_questions = []
+    if suggested_questions:
+        for q in suggested_questions:
+            q_text = q.get("question", "")
+            if not any(q_text.lower() in asked for asked in asked_qs):
+                fresh_questions.append(q)
+
     if use_knowledge_graph:
         kg_parts = []
         if activated_conditions:
             cond_str = ", ".join(
                 f"{c['name']} (score: {c['score']})" for c in activated_conditions[:5]
             )
-            kg_parts.append(f"Activated conditions: {cond_str}")
+            kg_parts.append(f"Likely conditions: {cond_str}")
         if body_systems:
-            kg_parts.append(f"Affected body systems: {', '.join(body_systems[:3])}")
-        if all_symptoms:
-            kg_parts.append(f"Symptoms reported so far: {', '.join(all_symptoms)}")
-        if suggested_questions:
+            kg_parts.append(f"Body systems: {', '.join(body_systems[:3])}")
+        if fresh_questions:
             q_str = "\n".join(
-                f"  - {q['question']} (relevance: {q.get('relevance_score', 0)})"
-                for q in suggested_questions[:3]
+                f"  - {q['question']}" for q in fresh_questions[:2]
             )
-            kg_parts.append(f"Suggested follow-up questions from knowledge graph:\n{q_str}")
-        kg_block = "\n".join(kg_parts) if kg_parts else "No graph context yet."
-        context_header = "KNOWLEDGE GRAPH CONTEXT (use this to guide your questions)"
+            kg_parts.append(f"Suggested new questions (pick ONE or ask your own):\n{q_str}")
+        kg_block = "\n".join(kg_parts) if kg_parts else ""
+        context_header = "CLINICAL CONTEXT"
         followup_rule = (
-            "- Naturally incorporate the TOP suggested follow-up question from the "
-            "context above into your response.\n"
+            "- Use the clinical context to guide your ONE follow-up question.\n"
+            "- You may use a suggested question OR ask your own based on intake progress.\n"
         )
     else:
-        kg_block = (
-            "Knowledge graph is off. Rely on the symptoms listed below and sound "
-            "general intake practice (one focused question at a time)."
-        )
-        if all_symptoms:
-            kg_block += f"\nSymptoms reported so far: {', '.join(all_symptoms)}"
-        context_header = "INTAKE CONTEXT"
-        followup_rule = "- Ask one clear, relevant follow-up question based on what you know so far.\n"
+        kg_block = ""
+        context_header = "CONTEXT"
+        followup_rule = "- Ask one relevant follow-up question based on intake progress.\n"
 
     # Localized emergency number
     emerg = get_emergency_number(country_code)
