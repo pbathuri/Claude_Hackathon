@@ -1,7 +1,10 @@
 """
 Country detection from phone numbers and permission matrix enforcement.
-Uses Google's libphonenumber for parsing, DB-backed permission matrix.
-Falls back to PHONE_COUNTRY_MAP (longest-prefix match) when parsing fails.
+
+Doctor portal v2 (Twilio): country is resolved using ONLY "+" and the next two
+digits (e.g. "+01 8128034835" → "+01" → United States). No 3–4 digit prefixes.
+PHONE_COUNTRY_MAP holds those two-digit keys. If the key is missing, libphonenumber
+parses the full normalized number.
 """
 import hashlib
 import re
@@ -11,41 +14,100 @@ from sqlalchemy.orm import Session
 
 from models import CountryPermission, Patient
 
-# E.164 prefix → (ISO 3166-1 alpha-2, English display name).
-# Longer prefixes MUST be listed and matched before shorter ones (see resolve_country_from_e164_prefix).
-PHONE_COUNTRY_MAP: dict[str, tuple[str, str]] = {
-    # NANP: Dominican Republic (before generic +1)
-    "+1809": ("DO", "Dominican Republic"),
-    "+1829": ("DO", "Dominican Republic"),
-    "+1849": ("DO", "Dominican Republic"),
-    # Spec / common routes (ITU-style; longest keys win when iterating sorted by length)
-    "+1": ("US", "United States"),
-    "+7": ("RU", "Russia"),
-    "+20": ("EG", "Egypt"),
-    "+27": ("ZA", "South Africa"),
-    "+30": ("GR", "Greece"),
-    "+31": ("NL", "Netherlands"),
-    "+32": ("BE", "Belgium"),
-    "+33": ("FR", "France"),
-    "+34": ("ES", "Spain"),
-    "+36": ("HU", "Hungary"),
-    "+39": ("IT", "Italy"),
-    "+40": ("RO", "Romania"),
-    "+41": ("CH", "Switzerland"),
-    "+43": ("AT", "Austria"),
-    "+44": ("GB", "United Kingdom"),
-    "+45": ("DK", "Denmark"),
-    "+46": ("SE", "Sweden"),
-    "+47": ("NO", "Norway"),
+# Two-digit calling keys only: "+" plus exactly two digits (e.g. "+01", "+44", "+91").
+# Twilio-style NANP uses "+01" rather than "+1".
+PHONE_COUNTRY_MAP: dict[str, str] = {
+    "+01": "United States",
+    "+07": "Russia",
+    "+20": "Egypt",
+    "+27": "South Africa",
+    "+30": "Greece",
+    "+31": "Netherlands",
+    "+32": "Belgium",
+    "+33": "France",
+    "+34": "Spain",
+    "+36": "Hungary",
+    "+39": "Italy",
+    "+40": "Romania",
+    "+41": "Switzerland",
+    "+43": "Austria",
+    "+44": "United Kingdom",
+    "+45": "Denmark",
+    "+46": "Sweden",
+    "+47": "Norway",
+    "+49": "Germany",
+    "+81": "Japan",
+    "+82": "South Korea",
+    "+84": "Vietnam",
+    "+86": "China",
+    "+91": "India",
+    "+52": "Mexico",
+    "+55": "Brazil",
+    "+54": "Argentina",
+    "+56": "Chile",
+    "+57": "Colombia",
+    "+58": "Venezuela",
+    "+51": "Peru",
+    "+60": "Malaysia",
+    "+61": "Australia",
+    "+62": "Indonesia",
+    "+63": "Philippines",
+    "+64": "New Zealand",
+    "+65": "Singapore",
+    "+66": "Thailand",
+    "+90": "Turkey",
+    "+92": "Pakistan",
+    "+98": "Iran",
 }
 
-_PHONE_PREFIXES_SORTED: tuple[str, ...] = tuple(
-    sorted(PHONE_COUNTRY_MAP.keys(), key=len, reverse=True)
-)
+# Same keys as PHONE_COUNTRY_MAP → ISO 3166-1 alpha-2 for DB and permissions.
+PHONE_TWO_DIGIT_PREFIX_TO_ALPHA2: dict[str, str] = {
+    "+01": "US",
+    "+07": "RU",
+    "+20": "EG",
+    "+27": "ZA",
+    "+30": "GR",
+    "+31": "NL",
+    "+32": "BE",
+    "+33": "FR",
+    "+34": "ES",
+    "+36": "HU",
+    "+39": "IT",
+    "+40": "RO",
+    "+41": "CH",
+    "+43": "AT",
+    "+44": "GB",
+    "+45": "DK",
+    "+46": "SE",
+    "+47": "NO",
+    "+49": "DE",
+    "+81": "JP",
+    "+82": "KR",
+    "+84": "VN",
+    "+86": "CN",
+    "+91": "IN",
+    "+52": "MX",
+    "+55": "BR",
+    "+54": "AR",
+    "+56": "CL",
+    "+57": "CO",
+    "+58": "VE",
+    "+51": "PE",
+    "+60": "MY",
+    "+61": "AU",
+    "+62": "ID",
+    "+63": "PH",
+    "+64": "NZ",
+    "+65": "SG",
+    "+66": "TH",
+    "+90": "TR",
+    "+92": "PK",
+    "+98": "IR",
+}
 
 # Display names when Case.detected_country_code is set but no CountryPermission row exists.
 ALPHA2_ENGLISH_DISPLAY: dict[str, str] = {
-    a2: name for _, (a2, name) in PHONE_COUNTRY_MAP.items()
+    PHONE_TWO_DIGIT_PREFIX_TO_ALPHA2[k]: v for k, v in PHONE_COUNTRY_MAP.items()
 }
 ALPHA2_ENGLISH_DISPLAY.update(
     {
@@ -54,6 +116,7 @@ ALPHA2_ENGLISH_DISPLAY.update(
         "PH": "Philippines",
         "KE": "Kenya",
         "CA": "Canada",
+        "DO": "Dominican Republic",
         "ZZ": "Unknown / International (Tier 4)",
     }
 )
@@ -100,7 +163,7 @@ TIER4_JURISDICTION_CODE = "ZZ"
 
 def normalize_phone_e164(raw: str) -> str:
     """
-    Turn Twilio-style caller IDs into a single +digits string for parsing / prefix match.
+    Turn Twilio-style caller IDs into a single +digits string for parsing / storage.
     Ignores client: and sip: identifiers (no geographic country).
     """
     s = (raw or "").strip()
@@ -115,18 +178,48 @@ def normalize_phone_e164(raw: str) -> str:
     return f"+{digits}"
 
 
-def resolve_country_from_e164_prefix(e164: str) -> tuple[str, str, str] | None:
+def extract_two_digit_country_prefix(raw: str) -> str | None:
     """
-    Longest-prefix match against PHONE_COUNTRY_MAP.
-    Returns (iso_alpha2, english_name, matched_prefix) or None.
+    v2 rule: take '+' and exactly the first two digit characters after it.
+    If there is no '+', use the first two digits of the string's digit run.
     """
-    if not e164.startswith("+"):
+    s = (raw or "").strip()
+    if not s:
         return None
-    for prefix in _PHONE_PREFIXES_SORTED:
-        if e164.startswith(prefix):
-            a2, name = PHONE_COUNTRY_MAP[prefix]
-            return (a2, name, prefix)
-    return None
+    low = s.lower()
+    if low.startswith("client:") or low.startswith("sip:"):
+        return None
+    idx = s.find("+")
+    digits_after: list[str] = []
+    if idx >= 0:
+        for c in s[idx + 1 :]:
+            if c.isdigit():
+                digits_after.append(c)
+                if len(digits_after) >= 2:
+                    break
+    else:
+        for c in s:
+            if c.isdigit():
+                digits_after.append(c)
+                if len(digits_after) >= 2:
+                    break
+    if len(digits_after) < 2:
+        return None
+    return "+" + "".join(digits_after)
+
+
+def resolve_country_via_phone_map(raw: str) -> tuple[str, str] | None:
+    """
+    If the two-digit key is in PHONE_COUNTRY_MAP, return (iso_alpha2, english_name).
+    Otherwise None (caller should use libphonenumber).
+    """
+    key = extract_two_digit_country_prefix(raw)
+    if not key or key not in PHONE_COUNTRY_MAP:
+        return None
+    a2 = PHONE_TWO_DIGIT_PREFIX_TO_ALPHA2.get(key)
+    if not a2:
+        return None
+    return (a2, PHONE_COUNTRY_MAP[key])
 
 
 def parse_phone(phone_str: str) -> dict:
@@ -170,24 +263,29 @@ def normalize_caller_jurisdiction(db: Session, caller_number: str) -> dict:
     """
     Map a Twilio From number to jurisdiction country code for permissions.
 
-    - Parse failure → try PHONE_COUNTRY_MAP longest-prefix on normalized +digits.
+    - First: v2 PHONE_COUNTRY_MAP using '+' and the next two digits only.
+    - Else: libphonenumber via parse_phone(normalized).
     - Still no match → Tier 4 (ZZ) with best-effort E.164.
     - Parsed country not in permission matrix → Tier 4 (ZZ) but preserve
       detected_country_code for audit on the Case.
     """
     raw = (caller_number or "").strip()
     normalized = normalize_phone_e164(raw)
-    info = parse_phone(raw)
-    if "error" in info and normalized:
-        hit = resolve_country_from_e164_prefix(normalized)
-        if hit:
-            a2, name, _ = hit
-            info = {
-                "e164": normalized,
-                "country_code": a2,
-                "country_alpha3": ALPHA2_TO_ALPHA3.get(a2, a2),
-                "country_name": name,
-            }
+
+    map_hit = resolve_country_via_phone_map(raw)
+    if map_hit:
+        a2, name = map_hit
+        e164 = normalized if normalized else (f"+{re.sub(r'\D', '', raw)}" if raw else "")
+        if not e164.startswith("+"):
+            e164 = f"+{e164.lstrip('+')}" if e164 else "+00000000000"
+        info = {
+            "e164": e164,
+            "country_code": a2,
+            "country_alpha3": ALPHA2_TO_ALPHA3.get(a2, a2),
+            "country_name": name,
+        }
+    else:
+        info = parse_phone(raw)
 
     if "error" not in info:
         detected = info["country_code"]
