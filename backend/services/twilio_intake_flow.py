@@ -1,6 +1,6 @@
 """
 Twilio voice: strict sequential intake (one question per <Gather> callback).
-Gather timeouts are 60% of the prior tuned values (see GATHER_* / READY_TONE_*).
+Gather timeouts: prior short values × 1.2 (see GATHER_* / READY_TONE_*).
 """
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-# 60% of prior values (4s→2s, 4→2, 1.6s→~1s)
-GATHER_TIMEOUT_SEC = 2
-GATHER_SPEECH_TIMEOUT = "2"
-READY_TONE_DURATION_SEC = 1.0
+# ×1.2 on prior values (2→2.4→3s, "2"→"3", 1.0→1.2s tone)
+GATHER_TIMEOUT_SEC = 3
+GATHER_SPEECH_TIMEOUT = "3"
+READY_TONE_DURATION_SEC = 1.2
 
 Action = Literal["gather_next", "submit_case", "consent_refused"]
 
@@ -148,17 +148,17 @@ def symptoms_from_chief_text(chief: str) -> list[str]:
 
 def parse_allergies_speech(speech: str) -> str | None:
     """
-    Returns canonical string: 'none' for no allergies (zero / none / nkda),
-    else the patient's wording (comma-separated if multiple). None = not understood.
+    Canonical no-allergy value is '0' (also accept none/nkda spoken as no allergies).
+    Otherwise returns spoken allergy text. None = not understood / empty.
     """
     raw = (speech or "").strip()
     if not raw:
         return None
     low = raw.lower()
     if low in ("0", "zero", "none", "no", "no allergies", "no allergy", "nkda", "no known", "no known allergies"):
-        return "none"
+        return "0"
     if re.fullmatch(r"0+", low):
-        return "none"
+        return "0"
     return raw[:500]
 
 
@@ -316,8 +316,8 @@ async def advance_twilio_intake_step(
     if phase == "sq_duration":
         session["twilio_stored_duration"] = extract_duration_from_speech(speech) or (speech or "").strip()[:120]
         return IntakeStepResult(
-            "Do you have any known allergies? If yes, please say the name of the allergy. "
-            "If you have no allergies, please say zero.",
+            "Do you have any known allergies? If yes, please say the name of your allergy. "
+            "If you have NO allergies, please say zero.",
             "sq_allergies",
             "gather_next",
         )
@@ -326,8 +326,8 @@ async def advance_twilio_intake_step(
         al = parse_allergies_speech(speech)
         if al is None:
             return IntakeStepResult(
-                "I didn't catch that. Do you have any known allergies? If yes, say the allergy name. "
-                "If you have none, please say zero.",
+                "I didn't catch that. Do you have any known allergies? If yes, say the name of your allergy. "
+                "If you have NO allergies, please say zero.",
                 "sq_allergies",
                 "gather_next",
             )
@@ -394,7 +394,8 @@ async def claude_symptom_summary_and_fill(
         "body_area": body_guess or "",
     }
     age_s = str(patient_age) if patient_age is not None else ""
-    al_display = (allergies or "none").strip() or "none"
+    _al = (allergies or "").strip()
+    al_display = "no known allergies" if _al in ("0", "none", "") else _al
     if not api_key:
         sym = ", ".join(symptoms) if symptoms else "unspecified symptoms"
         out["symptom_summary"] = (

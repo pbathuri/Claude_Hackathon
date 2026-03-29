@@ -178,7 +178,7 @@ async def tts_audio_for_twilio(text: str):
         return Response(status_code=503, content=b"ElevenLabs not configured")
 
     try:
-        async with httpx.AsyncClient(timeout=7.0) as client:
+        async with httpx.AsyncClient(timeout=8.5) as client:
             resp = await client.post(
                 f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream",
                 headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
@@ -487,7 +487,7 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
     case_id = session["case_id"]
     symptoms = list(session.get("collected_symptoms") or [])
     chief_text = (session.get("sq_chief_text") or "").strip()
-    allergies_text = (session.get("allergies_text") or "").strip() or "none"
+    allergies_text = (session.get("allergies_text") or "").strip() or "0"
     medications_list = list(session.get("medications_list") or [])
     patient_age = session.get("patient_age")
     history = session["message_history"]

@@ -105,10 +105,14 @@ export default function CaseDetailPage() {
     setAssignError(null);
     try {
       const docId = getSessionLicense() || "portal-doctor";
-      await assignDoctor(caseData.caseId, docId);
-      setAssigned(true);
+      const result = await assignDoctor(caseData.caseId, docId);
+      if (result.success) {
+        setAssigned(true);
+      } else {
+        setAssignError("Could not assign case. Please try again or contact support.");
+      }
     } catch (err) {
-      setAssignError(err instanceof Error ? err.message : "Failed to assign doctor");
+      setAssignError(err instanceof Error ? err.message : "Assignment failed");
     } finally {
       setAssigning(false);
     }

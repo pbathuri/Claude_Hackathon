@@ -31,7 +31,6 @@ export default function PatientIntakeResponses({ caseData }: { caseData: Case })
       </p>
       <dl className="divide-y divide-gray-100 rounded-lg border border-gray-100 bg-gray-50/50 px-4">
         <Row label="Patient name" value={caseData.patientName ?? ""} />
-        <Row label="Date of birth" value={caseData.patientDob ?? ""} />
         <Row label="Gender" value={caseData.patientGender ?? ""} />
         <Row label="Confirmed phone" value={caseData.patientPhone ?? ""} />
         <Row label="Result delivery preference" value={deliveryLabel(caseData.deliveryPreference)} />

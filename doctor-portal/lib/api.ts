@@ -153,20 +153,22 @@ export async function getDoctors(): Promise<Doctor[]> {
 // --- Mutations ---
 
 export async function assignDoctor(caseId: string, doctorId: string = "portal-doctor"): Promise<{ success: boolean }> {
-  const data = await fetchStrict<{
-    success?: boolean;
-    status?: string;
-    case_id?: string;
-    doctor_id?: string;
-  }>(`${API_BASE}/cases/${caseId}/assign`, {
-    method: "POST",
-    body: JSON.stringify({ doctor_id: doctorId }),
-  });
-  const ok = data.success === true || data.status === "assigned";
-  if (!ok) {
-    throw new Error("Assign request did not confirm success");
+  try {
+    const data = await fetchStrict<{
+      success?: boolean;
+      status?: string;
+      case_id?: string;
+      doctor_id?: string;
+    }>(`${API_BASE}/cases/${caseId}/assign`, {
+      method: "POST",
+      body: JSON.stringify({ doctor_id: doctorId }),
+    });
+    const ok = data.success === true || data.status === "assigned";
+    return { success: ok };
+  } catch (err) {
+    console.error("[assignDoctor] failed:", err);
+    return { success: false };
   }
-  return { success: true };
 }
 
 export async function submitResponse(
