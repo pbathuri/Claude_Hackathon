@@ -4,6 +4,9 @@ export const mockCases: Case[] = [
   {
     caseId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     patientAlias: "PT-9243",
+    patientAge: 34,
+    patientGender: "Female",
+    clinicalDiagnosis: "Acute abdominal pain — rule out appendicitis",
     country: "Kenya",
     countryTier: 3,
     urgency: "High",

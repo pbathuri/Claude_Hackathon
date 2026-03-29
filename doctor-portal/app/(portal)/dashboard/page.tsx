@@ -1,19 +1,19 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { Case, Doctor } from "@/types";
 import { getCases, getDoctors, timeAgo, subscribeCasesStream } from "@/lib/api";
+import { mergeCasesWithOverlays, subscribeOverlays, type CaseWithOverlay } from "@/lib/case-overlays";
 import StatsCard from "@/components/StatsCard";
 import PieChart from "@/components/PieChart";
 import BarChart from "@/components/BarChart";
-import UrgencyBadge from "@/components/UrgencyBadge";
+import ClinicalUrgencyBadge from "@/components/ClinicalUrgencyBadge";
 import CountryIndicator from "@/components/CountryIndicator";
 import PriorityBar from "@/components/PriorityBar";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { FileText, AlertTriangle, CalendarClock, Gauge, UserCheck, Clock } from "lucide-react";
 
-/** Slow fallback only: SSE (`subscribeCasesStream`) drives timely updates. */
 const POLL_FALLBACK_MS = 60_000;
 
 function getGreeting(): string {
@@ -27,6 +27,9 @@ export default function DashboardPage() {
   const [cases, setCases] = useState<Case[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [loading, setLoading] = useState(true);
+  const [overlayTick, setOverlayTick] = useState(0);
+
+  const merged = useMemo(() => mergeCasesWithOverlays(cases), [cases, overlayTick]);
 
   const fetchData = useCallback(async () => {
     const [casesData, doctorsData] = await Promise.all([getCases(), getDoctors()]);
@@ -41,39 +44,40 @@ export default function DashboardPage() {
     const stopStream = subscribeCasesStream(() => {
       fetchData();
     });
+    const stopOverlays = subscribeOverlays(() => setOverlayTick((t) => t + 1));
     return () => {
       clearInterval(interval);
       stopStream();
+      stopOverlays();
     };
   }, [fetchData]);
 
   if (loading) return <LoadingSpinner text="Loading dashboard..." />;
 
-  const highCount = cases.filter((c) => c.urgency === "High").length;
-  const medCount = cases.filter((c) => c.urgency === "Medium").length;
-  const lowCount = cases.filter((c) => c.urgency === "Low").length;
-  const avgPriority = cases.length
-    ? Math.round(cases.reduce((s, c) => s + c.priorityScore, 0) / cases.length)
+  const highCount = merged.filter((c) => c.displayUrgency === "High" || c.displayUrgency === "Critical").length;
+  const medCount = merged.filter((c) => c.displayUrgency === "Medium").length;
+  const lowCount = merged.filter((c) => c.displayUrgency === "Low").length;
+  const avgPriority = merged.length
+    ? Math.round(merged.reduce((s, c) => s + c.priorityScore, 0) / merged.length)
     : 0;
-  const todayCount = cases.filter((c) => {
+  const todayCount = merged.filter((c) => {
     const d = new Date(c.submittedAt);
     const now = new Date();
     return d.toDateString() === now.toDateString();
   }).length;
 
-  const countryCounts = cases.reduce<Record<string, number>>((acc, c) => {
+  const countryCounts = merged.reduce<Record<string, number>>((acc, c) => {
     acc[c.country] = (acc[c.country] || 0) + 1;
     return acc;
   }, {});
 
-  const recentCases = [...cases]
+  const recentCases: CaseWithOverlay[] = [...merged]
     .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime())
     .slice(0, 5);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-end justify-between">
+      <div className="flex items-end justify-between flex-wrap gap-4">
         <div>
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-heading font-bold text-gray-900">
@@ -101,16 +105,15 @@ export default function DashboardPage() {
         </Link>
       </div>
 
-      {/* Stats Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatsCard
           title="Total Cases"
-          value={cases.length}
-          subtitle={`${cases.filter((c) => c.status === "pending_review" || c.status === "intake_complete").length} pending review`}
+          value={merged.length}
+          subtitle={`${merged.filter((c) => c.status === "pending_review" || c.status === "intake_complete").length} pending review`}
           icon={FileText}
         />
         <StatsCard
-          title="High Urgency"
+          title="High / Critical"
           value={highCount}
           subtitle="Requires immediate attention"
           icon={AlertTriangle}
@@ -135,9 +138,7 @@ export default function DashboardPage() {
         />
       </div>
 
-      {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Urgency Distribution */}
         <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm">
           <h2 className="font-heading font-semibold text-gray-900 mb-5">
             Triage Distribution
@@ -145,15 +146,14 @@ export default function DashboardPage() {
           <div className="flex justify-center">
             <PieChart
               segments={[
-                { label: "Red (High)", value: highCount, color: "#E63946" },
-                { label: "Yellow (Med)", value: medCount, color: "#F4A261" },
-                { label: "Green (Low)", value: lowCount, color: "#2A9D8F" },
+                { label: "High / Critical", value: highCount, color: "#E63946" },
+                { label: "Medium", value: medCount, color: "#F4A261" },
+                { label: "Low", value: lowCount, color: "#2A9D8F" },
               ]}
             />
           </div>
         </div>
 
-        {/* Cases by Country */}
         <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm">
           <h2 className="font-heading font-semibold text-gray-900 mb-5">
             Cases by Country
@@ -169,9 +169,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Bottom Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Doctor Status */}
         <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm">
           <h2 className="font-heading font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <UserCheck className="w-5 h-5 text-who-blue" />
@@ -221,7 +219,6 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Recent Cases */}
         <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm">
           <h2 className="font-heading font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <Clock className="w-5 h-5 text-who-blue" />
@@ -236,24 +233,35 @@ export default function DashboardPage() {
               >
                 <div
                   className={`w-1 h-10 rounded-full shrink-0 ${
-                    c.urgency === "High"
+                    c.displayUrgency === "Critical"
+                      ? "bg-triage-critical"
+                      : c.displayUrgency === "High"
                       ? "bg-triage-red"
-                      : c.urgency === "Medium"
+                      : c.displayUrgency === "Medium"
                       ? "bg-triage-yellow"
                       : "bg-triage-green"
                   }`}
                 />
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
+                  <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                     <span className="text-sm font-semibold text-gray-800 group-hover:text-who-blue transition-colors">
                       {c.patientAlias}
                     </span>
                     <CountryIndicator country={c.country} />
+                    <ClinicalUrgencyBadge urgency={c.displayUrgency} size="sm" />
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
+                        c.reportStatus === "Submitted"
+                          ? "bg-green-50 text-green-700 border border-green-100"
+                          : "bg-amber-50 text-amber-800 border border-amber-100"
+                      }`}
+                    >
+                      Report: {c.reportStatus}
+                    </span>
                   </div>
                   <p className="text-xs text-gray-500 truncate">{c.symptomSummary}</p>
                 </div>
                 <div className="text-right shrink-0">
-                  <UrgencyBadge urgency={c.urgency} size="sm" />
                   <p className="text-[10px] text-gray-400 mt-1">{timeAgo(c.submittedAt)}</p>
                 </div>
               </Link>

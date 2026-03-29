@@ -92,17 +92,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — exact origins + any *.vercel.app preview/production for telehealth portal
+# CORS — exact origins + CORS_EXTRA_ORIGINS (Render portal, etc.) + *.vercel.app via regex
+_cors_base = [
+    "https://doctor-portal-flax.vercel.app",
+    "https://claude-hackathon-u86l.onrender.com",
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:8000",
+]
+_cors_extra = os.environ.get("CORS_EXTRA_ORIGINS", "")
+_cors_origins = _cors_base + [o.strip() for o in _cors_extra.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://doctor-portal-flax.vercel.app",
-        "https://claude-hackathon-u86l.onrender.com",
-        "http://localhost:3001",
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:8000",
-    ],
+    allow_origins=_cors_origins,
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],

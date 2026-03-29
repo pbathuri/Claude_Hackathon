@@ -17,6 +17,7 @@ const config: Config = {
           red: "#E63946",
           yellow: "#F4A261",
           green: "#2A9D8F",
+          critical: "#7C2D12",
         },
         sidebar: "#1A1A2E",
       },

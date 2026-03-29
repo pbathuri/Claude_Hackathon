@@ -4,18 +4,25 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import { Case } from "@/types";
 import { getCases, timeAgo, subscribeCasesStream } from "@/lib/api";
-import UrgencyBadge from "@/components/UrgencyBadge";
+import { mergeCasesWithOverlays, subscribeOverlays, type CaseWithOverlay } from "@/lib/case-overlays";
+import ClinicalUrgencyBadge from "@/components/ClinicalUrgencyBadge";
 import CountryIndicator from "@/components/CountryIndicator";
 import PriorityBar from "@/components/PriorityBar";
 import RedFlagBadge from "@/components/RedFlagBadge";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { Search, SlidersHorizontal, ArrowUpDown, ChevronRight, Bell } from "lucide-react";
 
-/** SSE pushes changes; this is a slow fallback if EventSource is blocked. */
 const POLL_FALLBACK_MS = 60_000;
 
 type SortKey = "priority" | "submitted" | "pain";
 type SortDir = "asc" | "desc";
+
+function stripeClass(u: CaseWithOverlay["displayUrgency"]) {
+  if (u === "Critical") return "bg-triage-critical";
+  if (u === "High") return "bg-triage-red";
+  if (u === "Medium") return "bg-triage-yellow";
+  return "bg-triage-green";
+}
 
 function playNotificationSound() {
   try {
@@ -42,12 +49,16 @@ export default function CasesPage() {
   const [urgencyFilter, setUrgencyFilter] = useState("");
   const [countryFilter, setCountryFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [reportStatusFilter, setReportStatusFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("priority");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [secondsAgo, setSecondsAgo] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
+  const [overlayTick, setOverlayTick] = useState(0);
   const prevCountRef = useRef<number | null>(null);
+
+  const merged = useMemo(() => mergeCasesWithOverlays(cases), [cases, overlayTick]);
 
   const fetchCases = useCallback(async () => {
     const data = await getCases();
@@ -68,6 +79,7 @@ export default function CasesPage() {
     const stopStream = subscribeCasesStream(() => {
       fetchCases();
     });
+    const stopOverlays = subscribeOverlays(() => setOverlayTick((t) => t + 1));
     const tickInterval = setInterval(() => {
       setSecondsAgo((prev) => prev + 1);
     }, 1000);
@@ -75,6 +87,7 @@ export default function CasesPage() {
       clearInterval(dataInterval);
       clearInterval(tickInterval);
       stopStream();
+      stopOverlays();
     };
   }, [fetchCases]);
 
@@ -88,7 +101,7 @@ export default function CasesPage() {
   );
 
   const filtered = useMemo(() => {
-    let result = [...cases];
+    let result = [...merged];
 
     if (search) {
       const q = search.toLowerCase();
@@ -99,9 +112,10 @@ export default function CasesPage() {
           c.bodyArea.toLowerCase().includes(q)
       );
     }
-    if (urgencyFilter) result = result.filter((c) => c.urgency === urgencyFilter);
+    if (urgencyFilter) result = result.filter((c) => c.displayUrgency === urgencyFilter);
     if (countryFilter) result = result.filter((c) => c.country === countryFilter);
     if (statusFilter) result = result.filter((c) => c.status === statusFilter);
+    if (reportStatusFilter) result = result.filter((c) => c.reportStatus === reportStatusFilter);
 
     result.sort((a, b) => {
       let diff = 0;
@@ -120,7 +134,7 @@ export default function CasesPage() {
     });
 
     return result;
-  }, [cases, search, urgencyFilter, countryFilter, statusFilter, sortKey, sortDir]);
+  }, [merged, search, urgencyFilter, countryFilter, statusFilter, reportStatusFilter, sortKey, sortDir]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -135,7 +149,6 @@ export default function CasesPage() {
 
   return (
     <div className="space-y-6">
-      {/* Toast notification */}
       {toast && (
         <div className="fixed top-4 right-4 z-50 animate-in slide-in-from-top-2 flex items-center gap-2 bg-who-blue text-white text-sm font-semibold px-4 py-2.5 rounded-lg shadow-lg">
           <Bell className="w-4 h-4" />
@@ -143,20 +156,18 @@ export default function CasesPage() {
         </div>
       )}
 
-      {/* Header */}
       <div>
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-heading font-bold text-gray-900">Case Queue</h1>
+          <h1 className="text-2xl font-heading font-bold text-gray-900">Patient queue</h1>
           <span className="text-xs text-gray-400">
             Last updated {secondsAgo}s ago
           </span>
         </div>
         <p className="text-sm text-gray-500 mt-1">
-          {cases.length} total cases &middot; {cases.filter((c) => c.status === "pending_review" || c.status === "intake_complete").length} pending review
+          {merged.length} patients &middot; {merged.filter((c) => c.status === "pending_review" || c.status === "intake_complete").length} pending review
         </p>
       </div>
 
-      {/* Filters */}
       <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
         <div className="flex items-center gap-2 mb-3">
           <SlidersHorizontal className="w-4 h-4 text-gray-400" />
@@ -178,10 +189,20 @@ export default function CasesPage() {
             onChange={(e) => setUrgencyFilter(e.target.value)}
             className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-who-blue/20 focus:border-who-blue"
           >
-            <option value="">All Urgency</option>
-            <option value="High">Red (High)</option>
-            <option value="Medium">Yellow (Medium)</option>
-            <option value="Low">Green (Low)</option>
+            <option value="">Clinical urgency</option>
+            <option value="Critical">Critical</option>
+            <option value="High">High</option>
+            <option value="Medium">Medium</option>
+            <option value="Low">Low</option>
+          </select>
+          <select
+            value={reportStatusFilter}
+            onChange={(e) => setReportStatusFilter(e.target.value)}
+            className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-who-blue/20 focus:border-who-blue"
+          >
+            <option value="">Report status</option>
+            <option value="Pending">Pending</option>
+            <option value="Submitted">Submitted</option>
           </select>
           <select
             value={countryFilter}
@@ -198,7 +219,7 @@ export default function CasesPage() {
             onChange={(e) => setStatusFilter(e.target.value)}
             className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-who-blue/20 focus:border-who-blue"
           >
-            <option value="">All Status</option>
+            <option value="">Case status</option>
             <option value="pending_review">Pending Review</option>
             <option value="assigned">Assigned</option>
             <option value="responded">Responded</option>
@@ -208,7 +229,6 @@ export default function CasesPage() {
         </div>
       </div>
 
-      {/* Sort Controls */}
       <div className="flex items-center gap-1 text-xs text-gray-500">
         <span className="mr-1">Sort by:</span>
         {(["priority", "submitted", "pain"] as SortKey[]).map((key) => (
@@ -229,7 +249,6 @@ export default function CasesPage() {
         ))}
       </div>
 
-      {/* Case List */}
       {filtered.length === 0 ? (
         <div className="text-center py-16 text-gray-400">
           <p className="text-lg font-heading font-semibold">No cases found</p>
@@ -244,26 +263,25 @@ export default function CasesPage() {
               className="block bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-who-blue/20 transition-all group"
             >
               <div className="flex items-stretch">
-                {/* Urgency stripe */}
-                <div
-                  className={`w-1.5 shrink-0 rounded-l-xl ${
-                    c.urgency === "High"
-                      ? "bg-triage-red"
-                      : c.urgency === "Medium"
-                      ? "bg-triage-yellow"
-                      : "bg-triage-green"
-                  }`}
-                />
+                <div className={`w-1.5 shrink-0 rounded-l-xl ${stripeClass(c.displayUrgency)}`} />
 
                 <div className="flex-1 p-4 sm:p-5">
                   <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                    {/* Left info */}
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3 mb-2">
+                      <div className="flex items-center gap-3 mb-2 flex-wrap">
                         <span className="text-base font-heading font-bold text-gray-900 group-hover:text-who-blue transition-colors">
                           {c.patientAlias}
                         </span>
-                        <UrgencyBadge urgency={c.urgency} size="sm" />
+                        <ClinicalUrgencyBadge urgency={c.displayUrgency} size="sm" />
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${
+                            c.reportStatus === "Submitted"
+                              ? "bg-green-50 text-green-700 border-green-100"
+                              : "bg-amber-50 text-amber-800 border-amber-100"
+                          }`}
+                        >
+                          {c.reportStatus}
+                        </span>
                         <CountryIndicator country={c.country} tier={c.countryTier} showTier />
                         {c.status && (
                           <span
@@ -296,7 +314,6 @@ export default function CasesPage() {
                       )}
                     </div>
 
-                    {/* Right: priority + arrow */}
                     <div className="flex items-center gap-4 sm:w-40 shrink-0">
                       <div className="flex-1">
                         <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide font-semibold">Priority</p>

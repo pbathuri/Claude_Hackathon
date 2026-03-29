@@ -7,6 +7,11 @@ export type CaseStatusType =
 export interface Case {
   caseId: string;
   patientAlias: string;
+  /** Optional demographics for clinical view (from intake or manual entry). */
+  patientAge?: number;
+  patientGender?: string;
+  /** Working / provisional diagnosis label for the portal. */
+  clinicalDiagnosis?: string;
   country: string;
   countryTier: number;
   urgency: "High" | "Medium" | "Low";

@@ -1,0 +1,42 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import Sidebar from "@/components/Sidebar";
+import LoadingSpinner from "@/components/LoadingSpinner";
+import { isLoggedIn } from "@/lib/auth-storage";
+
+export default function PortalShell({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    setChecked(true);
+  }, []);
+
+  useEffect(() => {
+    if (!checked) return;
+    if (!isLoggedIn()) {
+      const next = pathname || "/dashboard";
+      router.replace(`/login?next=${encodeURIComponent(next)}`);
+    }
+  }, [checked, router, pathname]);
+
+  if (!checked) {
+    return <LoadingSpinner text="Loading portal..." />;
+  }
+
+  if (!isLoggedIn()) {
+    return <LoadingSpinner text="Redirecting to sign in..." />;
+  }
+
+  return (
+    <>
+      <Sidebar />
+      <main className="md:ml-64 min-h-screen">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pt-16 md:pt-6">{children}</div>
+      </main>
+    </>
+  );
+}

@@ -1,4 +1,7 @@
 # Web service only. Set DATABASE_URL in the Render dashboard to your Postgres URI
+# If the doctor portal is hosted on Render, set CORS_EXTRA_ORIGINS to its public URL, e.g.
+#   https://who-doctor-portal.onrender.com
+# (comma-separated if multiple). See doctor-portal/render.yaml for the portal blueprint.
 # (e.g. Supabase: postgresql://postgres:...@db.<project-ref>.supabase.co:5432/postgres?sslmode=require).
 # sync: false keeps the dashboard value from being overwritten by this file.
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { KGStats, HottestPath, ConditionResult } from "@/types";
 import { getKGStats, getHottestPaths, getConditions } from "@/lib/api";
 import StatsCard from "@/components/StatsCard";
@@ -14,6 +15,7 @@ import {
   Activity,
   Database,
   TrendingUp,
+  ArrowLeft,
 } from "lucide-react";
 
 const specialtyColors: Record<string, string> = {
@@ -31,7 +33,7 @@ const specialtyColors: Record<string, string> = {
   Psychiatry: "#7209B7",
 };
 
-export default function KnowledgeGraphPage() {
+export default function KnowledgeGraphToolPage() {
   const [stats, setStats] = useState<KGStats | null>(null);
   const [paths, setPaths] = useState<HottestPath[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,25 +58,33 @@ export default function KnowledgeGraphPage() {
     setSearching(false);
   };
 
-  if (loading) return <LoadingSpinner text="Loading knowledge graph..." />;
+  if (loading) return <LoadingSpinner text="Loading clinical tools..." />;
 
   const severityColor = (s: string) =>
     s === "High" ? "text-triage-red bg-triage-red/10" : s === "Medium" ? "text-triage-yellow bg-triage-yellow/10" : "text-triage-green bg-triage-green/10";
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      <Link
+        href="/dashboard"
+        className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-who-blue transition-colors"
+      >
+        <ArrowLeft className="w-4 h-4" />
+        Back to dashboard
+      </Link>
+
       <div>
+        <p className="text-[11px] font-semibold text-who-blue uppercase tracking-wide mb-1">Clinical tools</p>
         <h1 className="text-2xl font-heading font-bold text-gray-900 flex items-center gap-2">
           <GitBranch className="w-7 h-7 text-who-blue" />
-          Knowledge Graph
+          Knowledge graph explorer
         </h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Medical knowledge graph powering AI triage decisions
+        <p className="text-sm text-gray-500 mt-1 max-w-2xl">
+          Supporting feature inside the Doctor Portal—explore pathways and conditions that inform triage. Primary
+          workflows remain the dashboard and patient queue.
         </p>
       </div>
 
-      {/* Stats */}
       {stats && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <StatsCard
@@ -111,7 +121,6 @@ export default function KnowledgeGraphPage() {
       )}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Hottest Paths - 2/3 */}
         <div className="xl:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
             <Zap className="w-5 h-5 text-triage-yellow" />
@@ -147,7 +156,6 @@ export default function KnowledgeGraphPage() {
           </div>
         </div>
 
-        {/* Symptom Search - 1/3 */}
         <div className="space-y-6">
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
             <h2 className="font-heading font-semibold text-gray-900 mb-4 flex items-center gap-2">
@@ -211,7 +219,6 @@ export default function KnowledgeGraphPage() {
             )}
           </div>
 
-          {/* Specialty Heatmap */}
           {stats && (
             <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
               <h2 className="font-heading font-semibold text-gray-900 mb-4">
@@ -245,7 +252,6 @@ export default function KnowledgeGraphPage() {
         </div>
       </div>
 
-      {/* Graph Last Updated */}
       {stats && (
         <p className="text-xs text-gray-400 text-center">
           Knowledge graph last updated: {new Date(stats.lastUpdated).toLocaleString()}

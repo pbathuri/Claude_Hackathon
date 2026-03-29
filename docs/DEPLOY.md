@@ -119,3 +119,16 @@ This backend’s schema is managed with **Alembic** (`backend/alembic/`). There 
 
 - `GET /health-check` — `dependencies.database` should be `true` after Postgres is correct.
 - Place a test call after removing `SKIP_TWILIO_SIGNATURE`.
+
+## 6. Doctor portal on Render (Next.js)
+
+The API already allows `http://localhost:3000` and common origins. For a **portal Web Service on Render**:
+
+1. In [Render Dashboard](https://dashboard.render.com) choose **New** → **Blueprint**.
+2. Connect the same GitHub repo and set the blueprint file path to **`doctor-portal/render.yaml`** (not the repo root).
+3. Apply the blueprint; Render creates **`who-doctor-portal`** (Node): `npm install && npm run build`, then `next start` on `$PORT`.
+4. When the deploy finishes, copy the portal URL (e.g. `https://who-doctor-portal.onrender.com`).
+5. On the **backend** Web Service → **Environment**, add:
+   - **`CORS_EXTRA_ORIGINS`** = that URL (no trailing slash). Use commas for multiple origins.
+6. Redeploy the backend (or wait for auto-deploy) so CORS picks up the new variable.
+7. Optional: change **`NEXT_PUBLIC_API_URL`** on the portal service if the API is not `https://claude-hackathon-u86l.onrender.com` — then trigger a **new deploy** of the portal so the client bundle is rebuilt with the correct API base URL.
