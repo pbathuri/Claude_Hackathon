@@ -1000,7 +1000,7 @@ def _generate_claude_response(
 
 
 @router.post("/ai-turn", response_model=AITurnResponse)
-async def ai_conversation_turn(req: AITurnRequest):
+async def ai_conversation_turn(req: AITurnRequest, db: Session = Depends(get_db)):
     """
     Process one conversation turn from the web simulator.
 
@@ -1013,6 +1013,10 @@ async def ai_conversation_turn(req: AITurnRequest):
 
     Anti-repetition: tracks previous AI messages per case to prevent loops.
     """
+    # ── 0a. Case country (one query via request-scoped session — avoids extra SessionLocal) ──
+    case_row = db.query(Case).filter_by(id=req.case_id).first()
+    case_country = (case_row.country_code or "") if case_row else ""
+
     # ── 0. Language detection and translation ──
     user_lang = req.language
     detected = detect_language(req.user_message)
@@ -1079,18 +1083,7 @@ async def ai_conversation_turn(req: AITurnRequest):
         except Exception as exc:
             kg_logger.warning("[AI Turn] KG navigation failed (non-blocking): %s", exc)
 
-    # ── 5. Case country + safety (IMMEDIATE only — not URGENT / not KG hypotheses) ──
-    case_country = ""
-    try:
-        from database import SessionLocal
-        _db = SessionLocal()
-        _case = _db.query(Case).filter_by(id=req.case_id).first()
-        if _case:
-            case_country = _case.country_code or ""
-        _db.close()
-    except Exception:
-        pass
-
+    # ── 5. Safety (IMMEDIATE only — not URGENT / not KG hypotheses) ──
     rf_turn = detect_red_flags(
         english_message,
         case_country,

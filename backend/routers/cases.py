@@ -67,7 +67,7 @@ def get_queue(doctor_id: str | None = None, db: Session = Depends(get_db)):
 @router.get("/patient-cases", tags=["frontend"])
 def list_patient_cases(
     status: str | None = None,
-    limit: int = Query(default=50, le=200),
+    limit: int = Query(default=200, le=500),
     db: Session = Depends(get_db),
 ):
     """

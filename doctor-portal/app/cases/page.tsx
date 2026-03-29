@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import { Case } from "@/types";
-import { getCases, timeAgo } from "@/lib/api";
+import { getCases, timeAgo, subscribeCasesStream } from "@/lib/api";
 import UrgencyBadge from "@/components/UrgencyBadge";
 import CountryIndicator from "@/components/CountryIndicator";
 import PriorityBar from "@/components/PriorityBar";
@@ -11,7 +11,8 @@ import RedFlagBadge from "@/components/RedFlagBadge";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { Search, SlidersHorizontal, ArrowUpDown, ChevronRight, Bell } from "lucide-react";
 
-const REFRESH_INTERVAL = 5000;
+/** SSE pushes changes; this is a slow fallback if EventSource is blocked. */
+const POLL_FALLBACK_MS = 60_000;
 
 type SortKey = "priority" | "submitted" | "pain";
 type SortDir = "asc" | "desc";
@@ -63,13 +64,17 @@ export default function CasesPage() {
 
   useEffect(() => {
     fetchCases();
-    const dataInterval = setInterval(fetchCases, REFRESH_INTERVAL);
+    const dataInterval = setInterval(fetchCases, POLL_FALLBACK_MS);
+    const stopStream = subscribeCasesStream(() => {
+      fetchCases();
+    });
     const tickInterval = setInterval(() => {
       setSecondsAgo((prev) => prev + 1);
     }, 1000);
     return () => {
       clearInterval(dataInterval);
       clearInterval(tickInterval);
+      stopStream();
     };
   }, [fetchCases]);
 

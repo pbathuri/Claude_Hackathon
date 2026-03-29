@@ -13,7 +13,8 @@ import PriorityBar from "@/components/PriorityBar";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { FileText, AlertTriangle, CalendarClock, Gauge, UserCheck, Clock } from "lucide-react";
 
-const REFRESH_INTERVAL = 5000;
+/** Slow fallback only: SSE (`subscribeCasesStream`) drives timely updates. */
+const POLL_FALLBACK_MS = 60_000;
 
 function getGreeting(): string {
   const h = new Date().getHours();
@@ -36,7 +37,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, REFRESH_INTERVAL);
+    const interval = setInterval(fetchData, POLL_FALLBACK_MS);
     const stopStream = subscribeCasesStream(() => {
       fetchData();
     });

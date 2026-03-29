@@ -5,7 +5,7 @@ Also: escalated, expired → reassigned
 """
 from datetime import datetime, timezone
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from models import (
     Case, Patient, DoctorProfile, DoctorResponse, SymptomRecord,
@@ -571,20 +571,39 @@ def get_case_for_frontend(db: Session, case_id: str) -> dict | None:
 
 
 def get_all_cases_for_frontend(db: Session, status: str | None = None,
-                                limit: int = 50) -> list[dict]:
-    """Return all cases in the frontend contract shape."""
-    q = db.query(Case)
+                                limit: int = 200) -> list[dict]:
+    """Return all cases in the frontend contract shape.
+
+    Order: highest priority first, then newest opened first among ties.
+    Previously limit=50 with oldest-first tie-break hid new low-priority cases
+    when the queue had many higher-priority rows (doctor portal looked empty).
+    """
+    q = db.query(Case).options(selectinload(Case.images))
     if status:
         q = q.filter(Case.status == status)
-    q = q.order_by(Case.priority_score.desc(), Case.opened_at.asc())
+    q = q.order_by(Case.priority_score.desc(), Case.opened_at.desc())
     cases = q.limit(limit).all()
+
+    if not cases:
+        return []
+
+    patient_ids = {c.patient_id for c in cases if c.patient_id}
+    country_codes = {c.country_code for c in cases if c.country_code}
+    patients = {
+        p.id: p
+        for p in db.query(Patient).filter(Patient.id.in_(patient_ids)).all()
+    } if patient_ids else {}
+    perms = {
+        p.country_code: p
+        for p in db.query(CountryPermission).filter(
+            CountryPermission.country_code.in_(country_codes)
+        ).all()
+    } if country_codes else {}
 
     results = []
     for case in cases:
-        patient = db.query(Patient).filter_by(id=case.patient_id).first()
-        country_perm = db.query(CountryPermission).filter_by(
-            country_code=case.country_code
-        ).first()
+        patient = patients.get(case.patient_id)
+        country_perm = perms.get(case.country_code) if case.country_code else None
 
         intake = case.intake_data or {}
         image_urls = [
