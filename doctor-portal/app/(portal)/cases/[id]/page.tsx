@@ -20,6 +20,7 @@ import RedFlagBadge from "@/components/RedFlagBadge";
 import KGInsightsPanel from "@/components/KGInsightsPanel";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import MedicalReportSection from "@/components/MedicalReportSection";
+import PatientIntakeResponses from "@/components/PatientIntakeResponses";
 import { getSessionLicense } from "@/lib/auth-storage";
 import {
   ArrowLeft,
@@ -235,7 +236,9 @@ export default function CaseDetailPage() {
               <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                 <div>
                   <dt className="text-gray-500 text-xs uppercase font-semibold">Name</dt>
-                  <dd className="font-medium text-gray-900">{caseData.patientAlias}</dd>
+                  <dd className="font-medium text-gray-900">
+                    {caseData.patientName?.trim() || caseData.patientAlias}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-gray-500 text-xs uppercase font-semibold">Age</dt>
@@ -315,6 +318,8 @@ export default function CaseDetailPage() {
               {caseData.aiStructuredNotes ?? "—"}
             </div>
           </div>
+
+          <PatientIntakeResponses caseData={caseData} />
 
           <MedicalReportSection
             key={`${caseData.caseId}-${overlay.reportStatus}`}

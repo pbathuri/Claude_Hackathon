@@ -555,6 +555,11 @@ def get_case_for_frontend(db: Session, case_id: str) -> dict | None:
     return {
         "caseId": case.id,
         "patientAlias": case.patient_alias or f"PT-{case.id[:4].upper()}",
+        "patientName": intake.get("patient_name") or "",
+        "patientDob": intake.get("patient_dob") or "",
+        "patientPhone": intake.get("patient_phone") or "",
+        "patientGender": intake.get("patient_gender") or "",
+        "deliveryPreference": intake.get("delivery_preference") or "",
         "country": country_display_name_for_portal(
             case.country_code,
             getattr(case, "detected_country_code", None),
@@ -639,6 +644,11 @@ def get_all_cases_for_frontend(db: Session, status: str | None = None,
         results.append({
             "caseId": case.id,
             "patientAlias": case.patient_alias or f"PT-{case.id[:4].upper()}",
+            "patientName": intake.get("patient_name") or "",
+            "patientDob": intake.get("patient_dob") or "",
+            "patientPhone": intake.get("patient_phone") or "",
+            "patientGender": intake.get("patient_gender") or "",
+            "deliveryPreference": intake.get("delivery_preference") or "",
             "country": country_display_name_for_portal(
                 case.country_code,
                 getattr(case, "detected_country_code", None),

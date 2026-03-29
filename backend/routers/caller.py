@@ -829,6 +829,7 @@ def _generate_claude_response(
     use_knowledge_graph: bool = True,
     country_code: str = "",
     previous_ai_messages: list[str] | None = None,
+    extra_intake_instructions: str = "",
 ) -> str:
     """
     Call Claude to generate a conversational AI response; KG context optional.
@@ -938,6 +939,8 @@ def _generate_claude_response(
     if info_needed:
         progress_block += f"STILL NEED TO ASK ABOUT: {'; '.join(info_needed)}\n"
     progress_block += f"Turn {turn_number} of {MAX_TURNS_BEFORE_COMPLETE} max.\n"
+    if extra_intake_instructions.strip():
+        progress_block += extra_intake_instructions.strip() + "\n"
 
     system_prompt = (
         "You are a warm, empathetic health assistant conducting a symptom intake "
@@ -947,7 +950,8 @@ def _generate_claude_response(
         "- Keep each response to 1-2 short sentences. This is a phone call — be brief.\n"
         "- NEVER repeat a question or phrase from a previous turn.\n"
         "- Acknowledge what the patient just said, then ask ONE new question.\n"
-        "- Progress through the intake: symptoms → duration → severity → history → medications → allergies.\n"
+        "- Progress through: which body area is affected → how long symptoms have lasted → "
+        "severity (1-10) → other symptoms → medical history → medications → allergies.\n"
         "- RESPOND IN ENGLISH ONLY.\n"
         "- Likely conditions from the knowledge graph are statistical hypotheses, NOT diagnoses. "
         "Do NOT tell the patient to call emergency services based only on those labels. "
@@ -1379,7 +1383,7 @@ async def text_to_speech(req: TTSRequest):
                     "model_id": ELEVENLABS_MODEL_ID,
                     "voice_settings": {"stability": 0.75, "similarity_boost": 0.75},
                 },
-                timeout=15.0,
+                timeout=12.0,
             )
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="TTS service timeout")

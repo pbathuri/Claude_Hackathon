@@ -53,8 +53,18 @@ from config import (
     ANTHROPIC_API_KEY,
     ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID,
     CONVERSATION_MODEL, CONVERSATION_MAX_TOKENS,
+    INTAKE_MODEL,
     MIN_SYMPTOMS_FOR_COMPLETE, MAX_TURNS_BEFORE_COMPLETE,
     GRAPH_CONFIDENCE_THRESHOLD,
+)
+from services.twilio_intake_flow import (
+    GATHER_TIMEOUT_SEC,
+    GATHER_SPEECH_TIMEOUT,
+    READY_TONE_DURATION_SEC,
+    advance_twilio_demographics,
+    extract_duration_from_speech,
+    extract_body_area_from_speech,
+    claude_symptom_summary_and_fill,
 )
 from routers.caller import (
     _build_verbal_disclosure,
@@ -111,7 +121,7 @@ def _speak_twiml(text: str, voice: str, base_url: str) -> str:
 
 
 def _ready_tone_wav(
-    duration_sec: float = 2.0,
+    duration_sec: float = READY_TONE_DURATION_SEC,
     freq_hz: float = 660.0,
     sample_rate: int = 8000,
 ) -> bytes:
@@ -181,7 +191,7 @@ async def tts_audio_for_twilio(text: str):
         return Response(status_code=503, content=b"ElevenLabs not configured")
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=12.0) as client:
             resp = await client.post(
                 f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream",
                 headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
@@ -265,6 +275,8 @@ async def incoming_call(
             "ai_messages": [],  # for anti-repetition
             "country_code": country_code,
             "language": "en",  # will be updated after first speech
+            "intake_phase": "gender",
+            "caller_e164": phone_info.get("e164", ""),
         },
     )
 
@@ -276,7 +288,10 @@ async def incoming_call(
     gather_lang = lang_cfg["twilio_lang"]
 
     base_url = str(request.base_url).rstrip("/")
-    welcome_text = f"Welcome to the WHO Health Access Service. {shortened} Please describe your symptoms."
+    welcome_text = (
+        f"Welcome to the WHO Health Access Service. {shortened} "
+        "First, are you male or female? Please say male or female."
+    )
     welcome_play = _speak_twiml(welcome_text, voice, base_url)
     ready_play = _gather_ready_play()
     noinput_text = "I didn't catch that. Please call back when you're ready."
@@ -285,7 +300,8 @@ async def incoming_call(
     return _twiml(
         f'{welcome_play}'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
-        f' speechTimeout="auto" speechModel="experimental_conversations"'
+        f' timeout="{GATHER_TIMEOUT_SEC}" speechTimeout="{GATHER_SPEECH_TIMEOUT}"'
+        f' speechModel="experimental_conversations"'
         f' language="{gather_lang}">\n'
         f'{ready_play}'
         "  </Gather>\n"
@@ -323,12 +339,13 @@ async def gather_speech(
     collected = session["collected_symptoms"]
     country_code = session.get("country_code", "")
 
-    # ── Language detection on first turn ──
-    if turn == 1 and speech_result:
+    # ── Language detection (once per call; demographics may hold turn=1 several times) ──
+    if speech_result and not session.get("language_pinned"):
         detected_lang = detect_language(speech_result)
         if detected_lang != "en":
             session["language"] = detected_lang
             logger.info("[Twilio] Language detected: %s for call %s", detected_lang, call_sid)
+        session["language_pinned"] = True
 
     user_lang = session.get("language", "en")
     lang_cfg = get_language_config(user_lang)
@@ -341,6 +358,41 @@ async def gather_speech(
         english_speech = translate_to_english(speech_result, user_lang)
 
     session["message_history"].append({"role": "user", "content": english_speech})
+
+    # ── Demographic intake (ordered) before symptom collection ──
+    _phase = session.get("intake_phase", "symptoms")
+    if _phase != "symptoms":
+        reply_en, new_phase = await advance_twilio_demographics(
+            session,
+            english_speech,
+            anthropic_api_key=ANTHROPIC_API_KEY,
+            intake_model=INTAKE_MODEL,
+        )
+        session["intake_phase"] = new_phase
+        session["message_history"].append({"role": "assistant", "content": reply_en})
+        if new_phase == "symptoms":
+            session["turn"] = 1
+        session_store.twilio_session_set(call_sid, session)
+        spoken_response = (
+            translate_from_english(reply_en, user_lang) if user_lang != "en" else reply_en
+        )
+        base_url = str(request.base_url).rstrip("/")
+        resp_play = _speak_twiml(spoken_response, voice, base_url)
+        listen_play = _gather_ready_play()
+        no_input_msg = "I didn't catch that. Please call back when you're ready."
+        if user_lang != "en":
+            no_input_msg = translate_from_english(no_input_msg, user_lang)
+        noinput_play = _speak_twiml(no_input_msg, voice, base_url)
+        return _twiml(
+            f'{resp_play}'
+            f'  <Gather input="speech" action="/twilio/gather" method="POST"'
+            f' timeout="{GATHER_TIMEOUT_SEC}" speechTimeout="{GATHER_SPEECH_TIMEOUT}"'
+            f' speechModel="experimental_conversations"'
+            f' language="{gather_lang}">\n'
+            f'{listen_play}'
+            "  </Gather>\n"
+            f'{noinput_play}'
+        )
 
     # ── 1. Extract symptoms (from English text) ──
     graph = None
@@ -396,6 +448,17 @@ async def gather_speech(
         except Exception as exc:
             logger.warning("[Twilio] KG navigation failed (non-blocking): %s", exc)
 
+    if not session.get("twilio_stored_duration"):
+        _d = extract_duration_from_speech(english_speech)
+        if _d:
+            session["twilio_stored_duration"] = _d
+    if not session.get("twilio_stored_body_area"):
+        _b = extract_body_area_from_speech(english_speech)
+        if _b:
+            session["twilio_stored_body_area"] = _b
+        elif body_systems:
+            session["twilio_stored_body_area"] = str(body_systems[0])[:80]
+
     # ── 4. Layered safety engine (same path as REST /caller) ──
     rf = detect_red_flags(
         speech_result or "",
@@ -424,6 +487,18 @@ async def gather_speech(
     ai_response = None
     prior_history = session["message_history"][:-1]
 
+    extra_intake = ""
+    if not session.get("twilio_stored_duration"):
+        extra_intake += (
+            "\nSTILL NEED: Ask how long they have had these symptoms "
+            "(e.g. days, weeks, hours) if not already stated clearly.\n"
+        )
+    if not session.get("twilio_stored_body_area"):
+        extra_intake += (
+            "\nSTILL NEED: Ask what part of the body is affected "
+            "(chest, head, abdomen, back, etc.) if not already stated clearly.\n"
+        )
+
     try:
         ai_response = _generate_claude_response(
             turn_number=turn,
@@ -439,6 +514,7 @@ async def gather_speech(
             use_knowledge_graph=graph is not None,
             country_code=country_code,
             previous_ai_messages=session.get("ai_messages", []),
+            extra_intake_instructions=extra_intake,
         )
         logger.info(
             "[Twilio] Claude+KG turn %s case=%s symptoms=%d graph=%s",
@@ -552,7 +628,8 @@ async def gather_speech(
     return _twiml(
         f'{resp_play}'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
-        f' speechTimeout="auto" speechModel="experimental_conversations"'
+        f' timeout="{GATHER_TIMEOUT_SEC}" speechTimeout="{GATHER_SPEECH_TIMEOUT}"'
+        f' speechModel="experimental_conversations"'
         f' language="{gather_lang}">\n'
         f'{listen_play}'
         "  </Gather>\n"
@@ -590,31 +667,49 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
     else:
         triage_level = "GREEN"
 
-    # Extract duration from user messages
-    duration = ""
-    dur_match = re.search(r'(\d+\s*(?:days?|weeks?|months?|hours?|years?))', user_text, re.IGNORECASE)
-    if dur_match:
-        duration = dur_match.group(1)
-    else:
-        since_match = re.search(r'since\s+(yesterday|last\s+\w+)', user_text, re.IGNORECASE)
-        if since_match:
-            duration = f"since {since_match.group(1)}"
-
     # Extract severity from user messages
     severity = 5
-    sev_match = re.search(r'(?:severity|pain|level|scale).*?(\d+)|(\d+)\s*(?:out of|/)\s*10', user_text, re.IGNORECASE)
+    sev_match = re.search(
+        r'(?:severity|pain|level|scale).*?(\d+)|(\d+)\s*(?:out of|/)\s*10',
+        user_text,
+        re.IGNORECASE,
+    )
     if sev_match:
         raw = next((g for g in sev_match.groups() if g), None)
         if raw and 1 <= int(raw) <= 10:
             severity = int(raw)
 
-    # Build concise clinical summary from symptoms + context
-    symptom_str = ", ".join(symptoms) if symptoms else "unspecified symptoms"
-    summary = f"Patient reports: {symptom_str}."
-    if duration:
-        summary += f" Duration: {duration}."
-    if severity != 5:
-        summary += f" Severity: {severity}/10."
+    duration = session.get("twilio_stored_duration") or ""
+    if not duration:
+        dur_match = re.search(
+            r'(\d+\s*(?:days?|weeks?|months?|hours?|years?))', user_text, re.IGNORECASE
+        )
+        if dur_match:
+            duration = dur_match.group(1)
+        else:
+            since_match = re.search(r'since\s+(yesterday|last\s+\w+)', user_text, re.IGNORECASE)
+            if since_match:
+                duration = f"since {since_match.group(1)}"
+
+    body_area = session.get("twilio_stored_body_area") or extract_body_area_from_speech(user_text)
+
+    filled = await claude_symptom_summary_and_fill(
+        transcript=transcript,
+        symptoms=symptoms,
+        patient_gender=session.get("patient_gender") or "unspecified",
+        patient_name=session.get("patient_name") or "",
+        patient_dob=session.get("patient_dob") or "",
+        patient_phone=session.get("patient_phone") or session.get("caller_e164", ""),
+        delivery_preference=session.get("delivery_preference") or "",
+        duration_guess=duration,
+        body_guess=body_area,
+        severity=severity,
+        api_key=ANTHROPIC_API_KEY,
+        model=INTAKE_MODEL,
+    )
+    duration = filled.get("duration") or duration
+    body_area = filled.get("body_area") or body_area
+    symptom_summary_text = filled.get("symptom_summary") or ""
 
     intake_data = {
         "main_symptom": symptoms[0] if symptoms else "",
@@ -626,9 +721,15 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
         "allergies": [],
         "triage_level": triage_level,
         "recommended_specialty": "general",
-        "body_area": "",
+        "body_area": body_area,
         "red_flag_indicators": red_flags,
-        "patient_summary": summary,
+        "patient_summary": symptom_summary_text,
+        "symptom_summary": symptom_summary_text,
+        "patient_gender": session.get("patient_gender") or "unspecified",
+        "patient_name": session.get("patient_name") or "",
+        "patient_dob": session.get("patient_dob") or "",
+        "patient_phone": session.get("patient_phone") or session.get("caller_e164", ""),
+        "delivery_preference": session.get("delivery_preference") or "",
     }
 
     # ICD-11 mapping (non-blocking)
@@ -673,8 +774,8 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
         "symptoms_final": symptoms,
         "triage_level": triage_level,
     }
-    clinical_note = intake_data.get("patient_summary", "")
-    if ANTHROPIC_API_KEY and symptoms:
+    clinical_note = symptom_summary_text or intake_data.get("patient_summary", "")
+    if ANTHROPIC_API_KEY and symptoms and len(clinical_note) < 80:
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)

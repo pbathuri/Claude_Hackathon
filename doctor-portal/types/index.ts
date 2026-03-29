@@ -10,6 +10,11 @@ export interface Case {
   /** Optional demographics for clinical view (from intake or manual entry). */
   patientAge?: number;
   patientGender?: string;
+  /** Twilio intake demographics (when captured). */
+  patientName?: string;
+  patientDob?: string;
+  patientPhone?: string;
+  deliveryPreference?: string;
   /** Working / provisional diagnosis label for the portal. */
   clinicalDiagnosis?: string;
   country: string;

@@ -27,6 +27,12 @@ class IntakeData(BaseModel):
     body_area: str = ""
     red_flag_indicators: list[str] = Field(default_factory=list)
     patient_summary: str = ""
+    symptom_summary: str = ""
+    patient_gender: str = ""
+    patient_name: str = ""
+    patient_dob: str = ""
+    patient_phone: str = ""
+    delivery_preference: str = ""
     kg_insights: dict[str, Any] | None = None
 
 
@@ -42,6 +48,9 @@ def normalize_intake_dict(raw: dict) -> dict:
 
 def build_symptom_summary_line(intake: dict) -> str:
     """Single-line summary for portal symptomSummary (same field as before, richer when multiple symptoms)."""
+    ss = (intake.get("symptom_summary") or "").strip()
+    if ss:
+        return ss
     main = (intake.get("main_symptom") or "").strip()
     assoc = [s for s in (intake.get("associated_symptoms") or []) if s]
     if not assoc:

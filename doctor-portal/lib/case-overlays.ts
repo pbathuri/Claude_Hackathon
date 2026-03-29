@@ -4,20 +4,11 @@ export type ClinicalUrgency = "Low" | "Medium" | "High" | "Critical";
 
 export type ReportStatus = "Pending" | "Submitted";
 
-export type CommunicationPreference = "voice" | "sms" | "phone";
-
 export type MedicalReportPayload = {
   chiefComplaint: string;
-  bloodPressure: string;
-  heartRate: string;
-  temperature: string;
-  oxygenSaturation: string;
-  painScale: number;
-  medications: string;
-  allergies: string;
-  allergyFlags: string[];
+  diagnosis: string;
   doctorNotes: string;
-  communicationPreference: CommunicationPreference;
+  isEmergencyReferral: boolean;
   submittedAt: string;
 };
 
