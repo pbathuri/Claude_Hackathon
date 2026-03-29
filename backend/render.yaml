@@ -10,11 +10,12 @@ services:
     runtime: python
     name: who-triage-backend
     rootDir: backend
-    # Install only at build time. Do not run Alembic here: DB is often unreachable from the
-    # build network, migrations can time out, and a failed migrate looks like an opaque build failure.
+    # Build: deps only (no DB — avoids build failures / “cancelled” deploys when migrate runs too early).
     buildCommand: pip install -r requirements.txt
-    # Migrate at runtime when DATABASE_URL is valid, then start the API.
-    startCommand: sh -c "python -m alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    # Pre-deploy: migrations with DATABASE_URL (runs after build, before traffic switches; fails deploy if migrate fails).
+    preDeployCommand: python -m alembic upgrade head
+    # Start: app only (fast restarts; migrations are not repeated every boot).
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
         sync: false
