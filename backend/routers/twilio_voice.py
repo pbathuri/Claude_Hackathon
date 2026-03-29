@@ -16,7 +16,9 @@ Flow: Twilio POST /twilio/voice → verbal disclosure + first Gather
       → POST /twilio/gather (loop) → submit case or hangup
 """
 import hashlib
+import math
 import os
+import struct
 from urllib.parse import quote
 
 from fastapi import APIRouter, Request, Depends
@@ -106,6 +108,58 @@ def _speak_twiml(text: str, voice: str, base_url: str) -> str:
         return f'  <Say voice="{voice}">{safe}</Say>\n'
     encoded = quote(text[:2000], safe="")
     return f'  <Play>/twilio/tts-audio?text={encoded}</Play>\n'
+
+
+def _ready_tone_wav(
+    duration_sec: float = 2.0,
+    freq_hz: float = 660.0,
+    sample_rate: int = 8000,
+) -> bytes:
+    """Short sine 'ready' tone for <Gather> (avoids spoken 'go ahead, I'm listening')."""
+    n_samples = int(sample_rate * duration_sec)
+    attack = max(1, int(0.04 * sample_rate))
+    release_start = max(attack + 1, int((duration_sec - 0.12) * sample_rate))
+    frames = bytearray()
+    for i in range(n_samples):
+        t = i / sample_rate
+        amp = 0.32
+        if i < attack:
+            amp *= i / attack
+        elif i >= release_start:
+            amp *= max(0.0, (n_samples - i) / max(1, n_samples - release_start))
+        sample = int(32767 * min(1.0, amp) * math.sin(2 * math.pi * freq_hz * t))
+        frames.extend(struct.pack("<h", sample))
+    data = bytes(frames)
+    fmt_chunk = struct.pack(
+        "<4sIHHIIHH",
+        b"fmt ",
+        16,
+        1,
+        1,
+        sample_rate,
+        sample_rate * 2,
+        2,
+        16,
+    )
+    header = struct.pack("<4sI4s", b"RIFF", 36 + len(data), b"WAVE") + fmt_chunk
+    return header + struct.pack("<4sI", b"data", len(data)) + data
+
+
+def _gather_ready_play() -> str:
+    """Relative URL; Twilio resolves against the webhook host."""
+    return '  <Play>/twilio/ready-tone</Play>\n'
+
+
+# ─── GET /twilio/ready-tone — short tone for <Gather> (no Twilio signature) ─
+
+@router.get("/ready-tone")
+def twilio_ready_tone():
+    """Audio Twilio fetches for <Play> inside <Gather>; not webhook-signed."""
+    return Response(
+        content=_ready_tone_wav(),
+        media_type="audio/wav",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # ─── GET /twilio/tts-audio — ElevenLabs audio for Twilio <Play> ────────────
@@ -486,11 +540,8 @@ async def gather_speech(
             "  <Hangup/>"
         )
 
-    # ── 9. Continue → respond + gather next turn ─────────────────────────
-    listen_prompt = "Go ahead, I'm listening."
-    if user_lang != "en":
-        listen_prompt = translate_from_english(listen_prompt, user_lang)
-    listen_play = _speak_twiml(listen_prompt, voice, base_url)
+    # ── 9. Continue → short ready tone + gather (no spoken "go ahead" prompt)
+    listen_play = _gather_ready_play()
 
     no_input_msg = "I didn't catch that. Please call back when you're ready."
     if user_lang != "en":
