@@ -22,7 +22,7 @@ from domain.enums import CaseStatus, validate_transition, TriageLevel, UrgencyDi
 
 # ── Urgency + Tier scoring for frontend contract ──
 URGENCY_SCORES = {"RED": 100, "YELLOW": 50, "GREEN": 10, "BLACK": 0}
-TIER_SCORES = {1: 10, 2: 20, 3: 30}  # Higher tier = more underserved = higher priority
+TIER_SCORES = {1: 10, 2: 20, 3: 30, 4: 25}  # Tier 4 = guidance-only / unknown jurisdiction
 
 
 def compute_frontend_priority(triage_level: str, country_tier: int) -> float:
@@ -93,9 +93,14 @@ def transition_case_status(
     return case
 
 
-def create_case(db: Session, patient_id: str, country_code: str,
-                chief_complaint: str | None = None,
-                permission_tier: str | None = None) -> Case:
+def create_case(
+    db: Session,
+    patient_id: str,
+    country_code: str,
+    chief_complaint: str | None = None,
+    permission_tier: str | None = None,
+    detected_country_code: str | None = None,
+) -> Case:
     """Create a new case in 'open' status."""
     case = Case(
         patient_id=patient_id,
@@ -104,6 +109,7 @@ def create_case(db: Session, patient_id: str, country_code: str,
         chief_complaint=chief_complaint,
         permission_tier=permission_tier,
         patient_alias=_generate_patient_alias(patient_id),
+        detected_country_code=detected_country_code,
     )
     db.add(case)
     db.commit()
@@ -552,6 +558,8 @@ def get_case_for_frontend(db: Session, case_id: str) -> dict | None:
         "triageBreakdown": getattr(case, "triage_breakdown", None),
         # Phase 04: Full explainability package
         "explainability": explainability,
+        # Conversation transcript / clinical handoff (voice or web)
+        "conversationLog": getattr(case, "conversation_log", None),
     }
 
 

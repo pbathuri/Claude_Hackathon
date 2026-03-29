@@ -13,6 +13,10 @@ Maps internal domain models to FHIR R4 resources for:
 
 These are export/serialization adapters — they do not modify the database.
 Designed per HL7 FHIR R4 (https://www.hl7.org/fhir/r4/summary.html).
+
+Canonical case-bundle export for this codebase lives in
+`adapters.fhir_mapper.build_case_bundle` (used by `/cases/{id}/fhir`).
+This module remains for standalone resource helpers and interoperability tests.
 """
 from datetime import datetime
 from typing import Optional

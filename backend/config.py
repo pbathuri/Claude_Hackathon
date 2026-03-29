@@ -22,10 +22,47 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
-TWILIO_API_KEY_SECRET = os.getenv("TWILIO_API_KEY_SECRET", "")
 
 # --- Database ---
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./telehealth.db")
+def _normalize_database_url(url: str) -> str:
+    """Render/Heroku sometimes provide postgres://; SQLAlchemy expects postgresql://."""
+    u = url.strip()
+    if u.startswith("postgres://"):
+        return u.replace("postgres://", "postgresql://", 1)
+    return u
+
+
+def _validate_database_url(url: str) -> None:
+    """
+    Catch common misconfiguration: Supabase/API HTTPS URL instead of Postgres URI.
+    Correct form: postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres
+    """
+    if not url:
+        return
+    lower = url.lower()
+    if lower.startswith(("http://", "https://")):
+        raise ValueError(
+            "DATABASE_URL must be the PostgreSQL connection string (postgresql://... or postgres://...), "
+            "not the Supabase REST URL (https://....supabase.co). "
+            "In Supabase Dashboard: Project Settings → Database → Connection string → URI "
+            "(use 'Transaction' or 'Session' mode; add ?sslmode=require if required)."
+        )
+    if "supabase.co" in lower and not (
+        lower.startswith("postgresql") or lower.startswith("postgres://")
+    ):
+        raise ValueError(
+            "DATABASE_URL for Supabase must be the Postgres URI (postgres:// or postgresql://), "
+            "not https://."
+        )
+
+
+_raw_db_url = os.getenv("DATABASE_URL", "sqlite:///./telehealth.db").strip()
+if _raw_db_url and not _raw_db_url.startswith("sqlite"):
+    _validate_database_url(_raw_db_url)
+DATABASE_URL = _normalize_database_url(_raw_db_url)
+
+# Twilio REST: accept TWILIO_API_KEY as alias when users name the secret that way in hosting UIs
+TWILIO_API_KEY_SECRET = os.getenv("TWILIO_API_KEY_SECRET", "") or os.getenv("TWILIO_API_KEY", "")
 
 # --- Redis (browser Web Speech transcript persistence; optional) ---
 REDIS_URL = os.getenv("REDIS_URL", "")

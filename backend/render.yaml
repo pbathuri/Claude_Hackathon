@@ -1,11 +1,17 @@
+# Web service only. Set DATABASE_URL in the Render dashboard to your Postgres URI
+# (e.g. Supabase: postgresql://postgres:...@db.<project-ref>.supabase.co:5432/postgres?sslmode=require).
+# sync: false keeps the dashboard value from being overwritten by this file.
+
 services:
   - type: web
     runtime: python
     name: who-triage-backend
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    buildCommand: pip install -r requirements.txt && python -c "import alembic, psycopg2"
+    startCommand: python -m alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
+      - key: DATABASE_URL
+        sync: false
       - key: PYTHON_VERSION
         value: "3.13.2"
       - key: ANTHROPIC_API_KEY
@@ -30,3 +36,9 @@ services:
         value: "1"
       - key: DEMO_MODE
         value: "1"
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: SKIP_TWILIO_SIGNATURE
+        value: "0"
+      - key: SENTRY_DSN
+        sync: false

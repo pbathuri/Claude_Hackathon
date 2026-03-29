@@ -17,8 +17,12 @@ import random
 from typing import Optional
 
 from .graph_engine import (
-    MedicalKnowledgeGraph, GraphNode, GraphEdge, ConversationTrace,
-    NodeType, EdgeType,
+    MedicalKnowledgeGraph,
+    GraphNode,
+    GraphEdge,
+    ConversationTrace,
+    NodeType,
+    EdgeType,
 )
 
 logger = logging.getLogger(__name__)
@@ -409,3 +413,57 @@ class ConversationNavigator:
                     "matching_symptoms": cond["matching_symptoms"],
                 }
         return None
+
+    # ── Redis / session persistence ─────────────────────────────────────
+
+    def to_snapshot(self) -> dict:
+        """Serialize navigable state for Redis (no graph reference)."""
+        tr = self.trace
+        traversed = [list(t) if isinstance(t, tuple) else t for t in tr.traversed_edges]
+        return {
+            "case_id": tr.case_id,
+            "asked_questions": list(self.asked_questions),
+            "reported_symptoms": list(self.reported_symptoms),
+            "symptom_node_ids": list(self._symptom_node_ids),
+            "unknown_symptoms": list(getattr(self, "_unknown_symptoms", [])),
+            "activated_nodes": dict(self.activated_nodes),
+            "trace": {
+                "trace_id": tr.trace_id,
+                "case_id": tr.case_id,
+                "visited_nodes": list(tr.visited_nodes),
+                "traversed_edges": traversed,
+                "activated_symptoms": list(tr.activated_symptoms),
+                "predicted_conditions": list(tr.predicted_conditions),
+                "final_specialty": tr.final_specialty,
+                "doctor_validated": tr.doctor_validated,
+                "doctor_diagnosis": tr.doctor_diagnosis,
+                "outcome_score": tr.outcome_score,
+                "timestamp": tr.timestamp,
+            },
+        }
+
+    @classmethod
+    def from_snapshot(cls, graph: MedicalKnowledgeGraph, data: dict) -> "ConversationNavigator":
+        """Restore navigator from `to_snapshot()` output."""
+        case_id = data.get("case_id") or (data.get("trace") or {}).get("case_id")
+        nav = cls(graph, case_id=case_id)
+        nav.asked_questions = set(data.get("asked_questions", []))
+        nav.reported_symptoms = list(data.get("reported_symptoms", []))
+        nav._symptom_node_ids = list(data.get("symptom_node_ids", []))
+        nav._unknown_symptoms = list(data.get("unknown_symptoms", []))
+        nav.activated_nodes = dict(data.get("activated_nodes", {}))
+        td = data.get("trace") or {}
+        nav.trace = ConversationTrace(
+            trace_id=td.get("trace_id") or nav.trace.trace_id,
+            case_id=td.get("case_id", case_id),
+            visited_nodes=list(td.get("visited_nodes", [])),
+            traversed_edges=[tuple(x) for x in td.get("traversed_edges", [])],
+            activated_symptoms=list(td.get("activated_symptoms", [])),
+            predicted_conditions=list(td.get("predicted_conditions", [])),
+            final_specialty=td.get("final_specialty"),
+            doctor_validated=bool(td.get("doctor_validated", False)),
+            doctor_diagnosis=td.get("doctor_diagnosis"),
+            outcome_score=float(td.get("outcome_score", 0.0)),
+            timestamp=float(td.get("timestamp", __import__("time").time())),
+        )
+        return nav

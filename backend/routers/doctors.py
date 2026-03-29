@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import DoctorProfile, Case
+from auth.middleware import get_current_actor
 
 router = APIRouter(prefix="/doctors", tags=["doctors"])
 
@@ -28,7 +29,11 @@ class DoctorUpdateRequest(BaseModel):
 
 
 @router.post("/")
-def register_doctor(req: DoctorCreateRequest, db: Session = Depends(get_db)):
+def register_doctor(
+    req: DoctorCreateRequest,
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(get_current_actor),
+):
     """Register a new doctor profile."""
     existing = db.query(DoctorProfile).filter_by(email=req.email).first()
     if existing:
@@ -124,7 +129,12 @@ def get_doctor(doctor_id: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/{doctor_id}")
-def update_doctor(doctor_id: str, req: DoctorUpdateRequest, db: Session = Depends(get_db)):
+def update_doctor(
+    doctor_id: str,
+    req: DoctorUpdateRequest,
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(get_current_actor),
+):
     """Update doctor availability or profile fields."""
     doctor = db.query(DoctorProfile).filter_by(id=doctor_id).first()
     if not doctor:
@@ -144,7 +154,11 @@ def update_doctor(doctor_id: str, req: DoctorUpdateRequest, db: Session = Depend
 
 
 @router.post("/{doctor_id}/verify")
-def verify_doctor(doctor_id: str, db: Session = Depends(get_db)):
+def verify_doctor(
+    doctor_id: str,
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(get_current_actor),
+):
     """Mark a doctor as verified (admin action)."""
     doctor = db.query(DoctorProfile).filter_by(id=doctor_id).first()
     if not doctor:

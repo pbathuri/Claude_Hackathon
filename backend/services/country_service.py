@@ -10,12 +10,43 @@ from sqlalchemy.orm import Session
 from models import CountryPermission, Patient
 
 
-# ISO alpha-2 → alpha-3 mapping for WHO GHO API
+# ISO alpha-2 → alpha-3 mapping for WHO GHO API (extend as needed)
 ALPHA2_TO_ALPHA3 = {
-    "NG": "NGA", "IN": "IND", "PH": "PHL",
-    "US": "USA", "GB": "GBR", "KE": "KEN",
-    "ZA": "ZAF", "BD": "BGD", "PK": "PAK",
+    "NG": "NGA", "IN": "IND", "PH": "PHL", "US": "USA", "GB": "GBR", "KE": "KEN",
+    "ZA": "ZAF", "BD": "BGD", "PK": "PAK", "CA": "CAN", "AU": "AUS", "DE": "DEU",
+    "FR": "FRA", "ES": "ESP", "IT": "ITA", "BR": "BRA", "MX": "MEX", "JP": "JPN",
+    "CN": "CHN", "RU": "RUS", "GH": "GHA", "EG": "EGY", "ET": "ETH", "TZ": "TZA",
+    "UG": "UGA", "RW": "RWA", "MW": "MWI", "ZM": "ZMB", "ZW": "ZWE", "AO": "AGO",
+    "MZ": "MOZ", "SN": "SEN", "CI": "CIV", "CM": "CMR", "CD": "COD", "MA": "MAR",
+    "DZ": "DZA", "TN": "TUN", "LY": "LBY", "SD": "SDN", "SS": "SSD", "SO": "SOM",
+    "ER": "ERI", "DJ": "DJI", "TD": "TCD", "NE": "NER", "ML": "MLI", "BF": "BFA",
+    "LR": "LBR", "SL": "SLE", "GM": "GMB", "GW": "GNB", "GN": "GIN", "CV": "CPV",
+    "ST": "STP", "GA": "GAB", "CG": "COG", "CF": "CAF", "GQ": "GNQ", "BI": "BDI",
+    "LS": "LSO", "BW": "BWA", "NA": "NAM", "SZ": "SWZ", "MG": "MDG", "MU": "MUS",
+    "SC": "SYC", "KM": "COM", "NL": "NLD", "BE": "BEL", "CH": "CHE", "AT": "AUT",
+    "PL": "POL", "SE": "SWE", "NO": "NOR", "DK": "DNK", "FI": "FIN", "IE": "IRL",
+    "PT": "PRT", "GR": "GRC", "CZ": "CZE", "HU": "HUN", "RO": "ROU", "BG": "BGR",
+    "HR": "HRV", "RS": "SRB", "SI": "SVN", "SK": "SVK", "LT": "LTU", "LV": "LVA",
+    "EE": "EST", "UA": "UKR", "BY": "BLR", "MD": "MDA", "GE": "GEO", "AM": "ARM",
+    "AZ": "AZE", "KZ": "KAZ", "UZ": "UZB", "TM": "TKM", "TJ": "TJK", "KG": "KGZ",
+    "AF": "AFG", "IR": "IRN", "IQ": "IRQ", "SA": "SAU", "AE": "ARE", "QA": "QAT",
+    "KW": "KWT", "BH": "BHR", "OM": "OMN", "YE": "YEM", "JO": "JOR", "LB": "LBN",
+    "SY": "SYR", "IL": "ISR", "PS": "PSE", "TR": "TUR", "CY": "CYP", "NZ": "NZL",
+    "FJ": "FJI", "PG": "PNG", "ID": "IDN", "MY": "MYS", "SG": "SGP", "TH": "THA",
+    "VN": "VNM", "KH": "KHM", "LA": "LAO", "MM": "MMR", "KR": "KOR", "KP": "PRK",
+    "TW": "TWN", "HK": "HKG", "MO": "MAC", "MN": "MNG", "NP": "NPL", "BT": "BTN",
+    "LK": "LKA", "MV": "MDV", "BA": "BIH", "MK": "MKD", "AL": "ALB", "XK": "XKX",
+    "LU": "LUX", "MT": "MLT", "IS": "ISL", "LI": "LIE", "MC": "MCO", "SM": "SMR",
+    "VA": "VAT", "AD": "AND", "UY": "URY", "PY": "PRY", "BO": "BOL", "PE": "PER",
+    "EC": "ECU", "CO": "COL", "VE": "VEN", "GY": "GUY", "SR": "SUR", "GF": "GUF",
+    "FK": "FLK", "CL": "CHL", "AR": "ARG", "CR": "CRI", "PA": "PAN", "NI": "NIC",
+    "HN": "HND", "SV": "SLV", "GT": "GTM", "BZ": "BLZ", "CU": "CUB", "JM": "JAM",
+    "HT": "HTI", "DO": "DOM", "PR": "PRI", "TT": "TTO", "BB": "BRB", "BS": "BHS",
+    "ZZ": "ZZZ",  # synthetic Tier 4 / unknown jurisdiction
 }
+
+# User-assigned ISO 3166-1 alpha-2 for unknown / unmapped jurisdictions (Tier 4 policy)
+TIER4_JURISDICTION_CODE = "ZZ"
 
 
 def parse_phone(phone_str: str) -> dict:
@@ -29,13 +60,15 @@ def parse_phone(phone_str: str) -> dict:
         return {"error": "Invalid phone number"}
 
     cc = phonenumbers.region_code_for_number(parsed)
+    if not cc:
+        return {"error": "Unknown region for phone number"}
     return {
         "e164": phonenumbers.format_number(
             parsed, phonenumbers.PhoneNumberFormat.E164
         ),
         "country_code": cc,
         "country_alpha3": ALPHA2_TO_ALPHA3.get(cc, cc),
-        "country_name": geocoder.description_for_number(parsed, "en"),
+        "country_name": geocoder.description_for_number(parsed, "en") or cc,
     }
 
 
@@ -47,6 +80,53 @@ def hash_phone(e164: str) -> str:
 def get_country_permissions(db: Session, country_code: str) -> CountryPermission | None:
     """Fetch the permission row for a country."""
     return db.query(CountryPermission).filter_by(country_code=country_code).first()
+
+
+def normalize_caller_jurisdiction(db: Session, caller_number: str) -> dict:
+    """
+    Map a Twilio From number to jurisdiction country code for permissions.
+
+    - Parse failure → Tier 4 (ZZ) with best-effort E.164.
+    - Parsed country not in permission matrix → Tier 4 (ZZ) but preserve
+      detected_country_code for audit on the Case.
+    """
+    raw = (caller_number or "").strip()
+    info = parse_phone(raw)
+    if "error" not in info:
+        detected = info["country_code"]
+        perm = get_country_permissions(db, detected)
+        if perm is not None:
+            return {
+                "phone_info": info,
+                "jurisdiction_code": detected,
+                "detected_country_code": detected,
+            }
+        return {
+            "phone_info": {
+                **info,
+                "country_code": TIER4_JURISDICTION_CODE,
+                "country_name": info.get("country_name") or "Unknown region",
+                "country_alpha3": ALPHA2_TO_ALPHA3.get(
+                    TIER4_JURISDICTION_CODE, TIER4_JURISDICTION_CODE
+                ),
+            },
+            "jurisdiction_code": TIER4_JURISDICTION_CODE,
+            "detected_country_code": detected,
+        }
+
+    e164 = raw if raw.startswith("+") else (f"+{raw}" if raw else "+00000000000")
+    return {
+        "phone_info": {
+            "e164": e164,
+            "country_code": TIER4_JURISDICTION_CODE,
+            "country_alpha3": ALPHA2_TO_ALPHA3.get(
+                TIER4_JURISDICTION_CODE, TIER4_JURISDICTION_CODE
+            ),
+            "country_name": "Unknown",
+        },
+        "jurisdiction_code": TIER4_JURISDICTION_CODE,
+        "detected_country_code": None,
+    }
 
 
 def check_teleconsult_allowed(db: Session, country_code: str) -> dict:
@@ -91,6 +171,27 @@ def get_or_create_patient(
 
 # ── Seed data for the three target countries ──
 SEED_COUNTRIES = [
+    {
+        "country_code": "ZZ",
+        "country_name": "Unknown / International (Tier 4)",
+        "permission_tier": "advice_only",
+        "country_tier": 4,
+        "allows_teleconsult": True,
+        "allows_ai_triage": True,
+        "allows_prescription": False,
+        "requires_local_doctor": True,
+        "cross_border_allowed": False,
+        "data_residency_required": False,
+        "max_retention_days": 30,
+        "regulatory_basis": "Default guidance-only policy for unmapped jurisdictions",
+        "data_law": "Operator privacy policy; no specific national telemedicine license claimed",
+        "disclaimer_text": (
+            "This service provides general health information only — not a medical diagnosis "
+            "or prescription. A clinician may review your case when available. "
+            "If this is an emergency, contact your local emergency number or go to the nearest hospital."
+        ),
+        "notes": "Synthetic jurisdiction row for parse failures and countries outside the matrix.",
+    },
     {
         "country_code": "NG",
         "country_name": "Nigeria",

@@ -190,7 +190,8 @@ def build_medical_knowledge_graph(persist_path: str = None) -> MedicalKnowledgeG
 
     # ── Step 3: Run data pipeline enrichment (optional, cache-backed) ────
     import os
-    if os.environ.get("SKIP_PIPELINE_ENRICHMENT", "").lower() in ("1", "true", "yes"):
+    _skip = os.environ.get("SKIP_PIPELINE_ENRICHMENT", "") or os.environ.get("SKIP_PIPELINE", "")
+    if _skip.lower() in ("1", "true", "yes"):
         logger.info("[Builder] Skipping pipeline enrichment (SKIP_PIPELINE_ENRICHMENT=1)")
     else:
         try:

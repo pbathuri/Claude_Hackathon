@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
+from auth.middleware import get_current_actor
 from services.country_service import (
     parse_phone, check_teleconsult_allowed, get_or_create_patient, hash_phone,
 )
@@ -35,7 +36,11 @@ class StartIntakeResponse(BaseModel):
 
 
 @router.post("/start", response_model=StartIntakeResponse)
-async def start_intake(req: StartIntakeRequest, db: Session = Depends(get_db)):
+async def start_intake(
+    req: StartIntakeRequest,
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(get_current_actor),
+):
     """
     Start a new intake session from an inbound call/message.
     1. Parse phone → detect country
@@ -99,7 +104,11 @@ class IntakeMessageResponse(BaseModel):
 
 
 @router.post("/message", response_model=IntakeMessageResponse)
-async def send_intake_message(req: IntakeMessageRequest, db: Session = Depends(get_db)):
+async def send_intake_message(
+    req: IntakeMessageRequest,
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(get_current_actor),
+):
     """
     Send a message in an ongoing intake conversation.
     When intake is complete, returns structured data + ICD-11 codes.

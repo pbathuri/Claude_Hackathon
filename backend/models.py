@@ -8,11 +8,31 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     Column, String, Integer, Float, Boolean, Text, DateTime, ForeignKey,
-    JSON, Enum as SAEnum, Index,
+    Enum as SAEnum, Index,
 )
 from sqlalchemy.orm import relationship
 
 from database import Base
+from db_types import JSONCompat
+
+
+CASE_STATUS_VALUES = (
+    "open",
+    "intake_complete",
+    "pending",
+    "assigned",
+    "in_progress",
+    "resolved",
+    "closed",
+    "escalated",
+    "expired",
+)
+
+case_status_enum = SAEnum(
+    *CASE_STATUS_VALUES,
+    name="case_status",
+    native_enum=False,
+)
 
 
 def gen_uuid():
@@ -50,7 +70,7 @@ class DoctorProfile(Base):
     email = Column(String(200), unique=True, nullable=False)
     specialization = Column(String(100), nullable=False)
     country_code = Column(String(3), nullable=False)
-    languages = Column(JSON, default=["en"])
+    languages = Column(JSONCompat, default=["en"])
     license_number = Column(String(100))
     license_verified = Column(Boolean, default=False)
     medical_school = Column(String(200))
@@ -74,27 +94,29 @@ class Case(Base):
 
     # Status: open -> intake_complete -> pending -> assigned -> in_progress -> resolved -> closed
     #         Also: escalated, expired
-    status = Column(String(30), nullable=False, default="open")
+    status = Column(case_status_enum, nullable=False, default="open")
     triage_level = Column(String(10), nullable=True)  # RED, YELLOW, GREEN, BLACK
     chief_complaint = Column(Text, nullable=True)
     country_code = Column(String(3), nullable=False)
+    # ISO alpha-2 from phone parse when jurisdiction falls back to Tier 4 (audit)
+    detected_country_code = Column(String(3), nullable=True)
 
     # Intake data from Claude (structured JSON)
-    intake_data = Column(JSON, nullable=True)
-    icd11_codes = Column(JSON, default=[])
+    intake_data = Column(JSONCompat, nullable=True)
+    icd11_codes = Column(JSONCompat, default=[])
     recommended_specialty = Column(String(100), nullable=True)
 
     # Phase 01: Canonical conversation log (ConversationSummary JSON)
-    conversation_log = Column(JSON, nullable=True)
+    conversation_log = Column(JSONCompat, nullable=True)
     # Phase 01: Explainable triage scoring (TriageScoreBreakdown JSON)
-    triage_breakdown = Column(JSON, nullable=True)
+    triage_breakdown = Column(JSONCompat, nullable=True)
     # Phase 01: Detected language of the patient
     detected_language = Column(String(5), nullable=True)
 
     # Frontend-facing fields
     patient_alias = Column(String(20), nullable=True)   # e.g. "PT-2048"
     body_area = Column(String(100), nullable=True)       # e.g. "Abdomen", "Head"
-    red_flag_indicators = Column(JSON, default=[])       # e.g. ["Persistent pain", "Fever"]
+    red_flag_indicators = Column(JSONCompat, default=[])       # e.g. ["Persistent pain", "Fever"]
 
     # Priority scoring
     priority_score = Column(Float, default=0.0)
@@ -135,8 +157,8 @@ class SymptomRecord(Base):
 
     id = Column(String, primary_key=True, default=gen_uuid)
     case_id = Column(String, ForeignKey("cases.id", ondelete="CASCADE"), nullable=False)
-    symptoms_json = Column(JSON, default=[])
-    icd11_codes = Column(JSON, default=[])
+    symptoms_json = Column(JSONCompat, default=[])
+    icd11_codes = Column(JSONCompat, default=[])
     severity = Column(Integer, nullable=True)
     transcript_text = Column(Text, nullable=True)
     recorded_at = Column(DateTime, default=utcnow)
@@ -234,7 +256,7 @@ class AuditLog(Base):
     action = Column(String(50), nullable=False)
     resource_type = Column(String(50), nullable=False)
     resource_id = Column(String, nullable=True)
-    details = Column(JSON, nullable=True)
+    details = Column(JSONCompat, nullable=True)
 
     __table_args__ = (
         Index("ix_audit_timestamp", "timestamp"),

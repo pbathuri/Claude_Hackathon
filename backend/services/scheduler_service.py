@@ -2,13 +2,14 @@
 Background task scheduler for case expiration checks and follow-up automation.
 Uses APScheduler (lightweight alternative to Celery for hackathon).
 """
+import os
 from datetime import datetime, timezone, timedelta
 import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from database import SessionLocal
-from models import Case, FollowUpSchedule
+from models import Case, FollowUpSchedule, CountryPermission
 from config import DOCTOR_RESPONSE_TIMEOUT_HOURS, FOLLOWUP_HOURS
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,44 @@ def schedule_case_followups(case_id: str):
         db.close()
 
 
+def purge_expired_case_records():
+    """
+    Daily-style retention: delete closed cases older than country max_retention_days.
+    Enable with DATA_PURGE_ENABLED=1 (destructive).
+    """
+    if os.environ.get("DATA_PURGE_ENABLED", "").lower() not in ("1", "true", "yes"):
+        return
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        perms = db.query(CountryPermission).all()
+        removed = 0
+        for perm in perms:
+            days = perm.max_retention_days or 90
+            cutoff = now - timedelta(days=days)
+            stale = (
+                db.query(Case)
+                .filter(
+                    Case.country_code == perm.country_code,
+                    Case.status == "closed",
+                    Case.closed_at.isnot(None),
+                    Case.closed_at < cutoff,
+                )
+                .all()
+            )
+            for c in stale:
+                db.delete(c)
+                removed += 1
+        if removed:
+            db.commit()
+            logger.info("Data retention purge removed %s closed cases", removed)
+    except Exception as e:
+        logger.error("Retention purge error: %s", e)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def start_scheduler():
     """Initialize and start the background scheduler."""
     scheduler.add_job(
@@ -128,6 +167,13 @@ def start_scheduler():
         "interval",
         minutes=15,
         id="check_pending_followups",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        purge_expired_case_records,
+        "interval",
+        hours=24,
+        id="purge_expired_case_records",
         replace_existing=True,
     )
     scheduler.start()

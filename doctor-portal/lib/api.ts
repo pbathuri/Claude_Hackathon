@@ -5,28 +5,36 @@ import {
   mockHottestPaths,
   getMockConditions,
 } from "./mock-data";
+import { portalHeaders } from "./portal-headers";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TIMEOUT_MS = 15000;
+const isDev = process.env.NODE_ENV === "development";
 
 let _isUsingMockData = false;
-export function isUsingMockData(): boolean { return _isUsingMockData; }
+export function isUsingMockData(): boolean {
+  return _isUsingMockData;
+}
 
-async function fetchWithFallback<T>(
-  url: string,
-  fallback: T,
-  options?: RequestInit
-): Promise<T> {
+function mergeInit(options?: RequestInit): RequestInit {
+  const extra = portalHeaders();
+  return {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...extra,
+      ...(options?.headers as Record<string, string>),
+    },
+  };
+}
+
+async function fetchWithFallback<T>(url: string, fallback: T, options?: RequestInit): Promise<T> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
     const res = await fetch(url, {
-      ...options,
+      ...mergeInit(options),
       signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-      },
     });
     clearTimeout(timeout);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -38,19 +46,12 @@ async function fetchWithFallback<T>(
   }
 }
 
-async function fetchStrict<T>(
-  url: string,
-  options?: RequestInit
-): Promise<T> {
+async function fetchStrict<T>(url: string, options?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   const res = await fetch(url, {
-    ...options,
+    ...mergeInit(options),
     signal: controller.signal,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
   });
   clearTimeout(timeout);
   if (!res.ok) {
@@ -60,7 +61,7 @@ async function fetchStrict<T>(
   return await res.json();
 }
 
-// --- Cases (real data only — no mock scaffolding) ---
+// --- Cases (real data only) ---
 
 export async function getCases(): Promise<Case[]> {
   return fetchWithFallback(`${API_BASE}/cases/patient-cases`, []);
@@ -74,13 +75,24 @@ export async function getCaseQueue(): Promise<Case[]> {
   return fetchWithFallback(`${API_BASE}/cases/queue`, []);
 }
 
-// --- Doctors (live, no mock fallback) ---
+/** SSE: backend pushes counts; caller should refetch lists. */
+export function subscribeCasesStream(onEvent: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const es = new EventSource(`${API_BASE}/cases/stream`);
+  es.onmessage = () => onEvent();
+  es.onerror = () => {
+    /* browser will retry; keep quiet */
+  };
+  return () => es.close();
+}
+
+// --- Doctors ---
 
 export async function getDoctors(): Promise<Doctor[]> {
   return fetchWithFallback<Doctor[]>(`${API_BASE}/doctors/`, []);
 }
 
-// --- Mutations (strict — throw on failure so UI can display errors) ---
+// --- Mutations ---
 
 export async function assignDoctor(caseId: string, doctorId: string = "portal-doctor"): Promise<{ success: boolean }> {
   return fetchStrict(`${API_BASE}/cases/${caseId}/assign`, {
@@ -98,55 +110,115 @@ export async function submitResponse(
     compliance_acknowledged: boolean;
   }
 ): Promise<{ success: boolean }> {
-  return fetchStrict(
-    `${API_BASE}/cases/${caseId}/respond`,
-    { method: "POST", body: JSON.stringify(payload) }
-  );
+  return fetchStrict(`${API_BASE}/cases/${caseId}/respond`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
-export async function backpropagateCase(
-  caseId: string,
-  diagnosis: string,
-  specialty: string
-): Promise<BackpropResult> {
-  return fetchStrict(
-    `${API_BASE}/kg/backpropagate`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        case_id: caseId,
-        doctor_diagnosis: diagnosis,
-        doctor_specialty: specialty,
-        outcome: "resolved",
-      }),
-    }
-  );
+export async function backpropagateCase(caseId: string, diagnosis: string, specialty: string): Promise<BackpropResult> {
+  return fetchStrict(`${API_BASE}/kg/backpropagate`, {
+    method: "POST",
+    body: JSON.stringify({
+      case_id: caseId,
+      doctor_diagnosis: diagnosis,
+      doctor_specialty: specialty,
+      outcome: "resolved",
+    }),
+  });
 }
 
-// --- KG endpoints (graceful fallback to mock) ---
+// --- KG: normalize snake_case API → portal types ---
+
+export function normalizeKgStats(raw: Record<string, unknown> | null | undefined): KGStats {
+  if (!raw || typeof raw !== "object") {
+    return {
+      totalNodes: 0,
+      totalEdges: 0,
+      learnedEdges: 0,
+      specialties: [],
+      lastUpdated: new Date().toISOString(),
+    };
+  }
+  return {
+    totalNodes: Number(raw.totalNodes ?? raw.total_nodes ?? 0),
+    totalEdges: Number(raw.totalEdges ?? raw.total_edges ?? 0),
+    learnedEdges: Number(raw.learnedEdges ?? raw.learned_edges ?? 0),
+    specialties: Array.isArray(raw.specialties) ? (raw.specialties as string[]) : [],
+    lastUpdated: String(raw.lastUpdated ?? raw.last_updated ?? new Date().toISOString()),
+  };
+}
+
+export function normalizeHottestPaths(raw: unknown): HottestPath[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr.map((p: Record<string, unknown>) => ({
+    source: String(p.source ?? ""),
+    target: String(p.target ?? ""),
+    conductivity: Number(p.conductivity ?? 0),
+    pathType: String(p.pathType ?? p.edge_type ?? "edge"),
+  }));
+}
+
+const emptyKgStats = normalizeKgStats({});
+const emptyHottest: HottestPath[] = [];
+
+const emptyNavigation: KGNavigationResult = {
+  conditions: [],
+  recommendedSpecialty: "",
+  followUpQuestions: [],
+  bodySystemMapping: {},
+  graphPaths: [],
+};
 
 export async function navigateKG(symptoms: string[]): Promise<KGNavigationResult> {
   return fetchWithFallback(
     `${API_BASE}/kg/navigate`,
-    mockKGNavigation,
+    isDev ? mockKGNavigation : emptyNavigation,
     { method: "POST", body: JSON.stringify({ case_id: "portal-query", symptoms }) }
   );
 }
 
 export async function getKGStats(): Promise<KGStats> {
-  return fetchWithFallback(`${API_BASE}/kg/stats`, mockKGStats);
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const res = await fetch(`${API_BASE}/kg/stats`, {
+      ...mergeInit(),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!res.ok) throw new Error(String(res.status));
+    _isUsingMockData = false;
+    const j = await res.json();
+    return normalizeKgStats(j);
+  } catch {
+    _isUsingMockData = true;
+    return isDev ? mockKGStats : emptyKgStats;
+  }
 }
 
 export async function getHottestPaths(): Promise<HottestPath[]> {
-  const result = await fetchWithFallback<{ paths: HottestPath[] } | HottestPath[]>(
-    `${API_BASE}/kg/hottest-paths`,
-    mockHottestPaths
-  );
-  return Array.isArray(result) ? result : result.paths || [];
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const res = await fetch(`${API_BASE}/kg/hottest-paths`, {
+      ...mergeInit(),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!res.ok) throw new Error(String(res.status));
+    _isUsingMockData = false;
+    const j = await res.json();
+    const paths = Array.isArray(j) ? j : j.paths || [];
+    return normalizeHottestPaths(paths);
+  } catch {
+    _isUsingMockData = true;
+    return isDev ? mockHottestPaths : emptyHottest;
+  }
 }
 
 export async function getConditions(symptomName: string): Promise<ConditionResult> {
-  const fallback = getMockConditions(symptomName);
+  const fallback = isDev ? getMockConditions(symptomName) : ({ symptom: symptomName, conditions: [] } as ConditionResult);
   return fetchWithFallback(`${API_BASE}/kg/conditions/${encodeURIComponent(symptomName)}`, fallback);
 }
 

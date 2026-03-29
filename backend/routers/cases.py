@@ -1,11 +1,15 @@
 """
 Cases router: case lifecycle management, doctor assignment, responses, follow-ups.
 """
+import asyncio
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import get_db
+from database import get_db, SessionLocal
 from models import Case, AuditLog
 from services.case_service import (
     get_case_with_details, get_case_for_frontend, get_all_cases_for_frontend,
@@ -13,6 +17,7 @@ from services.case_service import (
     escalate_case, close_case, schedule_followup, handle_followup_reply,
 )
 from services.priority_queue import get_next_case_for_doctor, get_queue_snapshot
+from auth.middleware import get_current_actor
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -87,6 +92,39 @@ def get_patient_case(case_id: str, db: Session = Depends(get_db)):
     return result
 
 
+@router.get("/stream", tags=["frontend"])
+async def cases_stream():
+    """
+    Server-Sent Events: pending case counts for doctor portal live refresh.
+    """
+
+    async def event_generator():
+        while True:
+            db = SessionLocal()
+            try:
+                pending = (
+                    db.query(Case)
+                    .filter(Case.status.in_(["pending", "intake_complete"]))
+                    .count()
+                )
+                total = db.query(Case).count()
+                payload = json.dumps({"pending": pending, "total": total})
+                yield f"data: {payload}\n\n"
+            finally:
+                db.close()
+            await asyncio.sleep(4)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/{case_id}")
 def get_case(case_id: str, db: Session = Depends(get_db)):
     """Get full case details including symptoms, responses, and follow-ups (internal format)."""
@@ -101,7 +139,12 @@ class AssignRequest(BaseModel):
 
 
 @router.post("/{case_id}/assign")
-def assign(case_id: str, req: AssignRequest, db: Session = Depends(get_db)):
+def assign(
+    case_id: str,
+    req: AssignRequest,
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(get_current_actor),
+):
     """Manually assign a case to a doctor."""
     try:
         case = assign_case(db, case_id, req.doctor_id)
@@ -130,7 +173,12 @@ def pull_next_case(req: AssignRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/{case_id}/start")
-def start(case_id: str, req: AssignRequest, db: Session = Depends(get_db)):
+def start(
+    case_id: str,
+    req: AssignRequest,
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(get_current_actor),
+):
     """Doctor starts working on an assigned case."""
     try:
         case = start_case(db, case_id, req.doctor_id)
@@ -147,7 +195,12 @@ class ResponseRequest(BaseModel):
 
 
 @router.post("/{case_id}/respond")
-def respond(case_id: str, req: ResponseRequest, db: Session = Depends(get_db)):
+def respond(
+    case_id: str,
+    req: ResponseRequest,
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(get_current_actor),
+):
     """
     Doctor submits guidance for a case. This resolves the case
     and schedules follow-up checks at 24h and 48h.
@@ -171,7 +224,11 @@ def respond(case_id: str, req: ResponseRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/{case_id}/escalate")
-def escalate(case_id: str, db: Session = Depends(get_db)):
+def escalate(
+    case_id: str,
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(get_current_actor),
+):
     """Manually escalate a case to RED priority."""
     try:
         case = escalate_case(db, case_id, reason="manual_escalation")
@@ -181,7 +238,11 @@ def escalate(case_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{case_id}/close")
-def close(case_id: str, db: Session = Depends(get_db)):
+def close(
+    case_id: str,
+    db: Session = Depends(get_db),
+    _actor: dict = Depends(get_current_actor),
+):
     """Close a resolved case."""
     try:
         case = close_case(db, case_id)

@@ -26,12 +26,16 @@ import httpx
 import logging
 
 from database import get_db
-from models import CountryPermission
+from models import CountryPermission, Case
 from services.country_service import (
-    parse_phone, check_teleconsult_allowed, get_or_create_patient,
+    normalize_caller_jurisdiction,
+    check_teleconsult_allowed,
+    get_or_create_patient,
 )
+from safety.jurisdiction_policy import get_jurisdiction_policy
+from security.twilio_signature import verify_twilio_webhook
 from services.case_service import create_case, complete_intake, move_to_pending
-from services.triage_service import check_emergency_keywords
+from safety.red_flag_rules import detect_red_flags, RedFlagSeverity
 from services.icd11_service import map_intake_to_icd11
 from services.language_service import (
     detect_language,
@@ -44,6 +48,7 @@ from services.language_service import (
 )
 from config import (
     is_knowledge_graph_enabled,
+    ANTHROPIC_API_KEY,
     ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID,
     CONVERSATION_MODEL, CONVERSATION_MAX_TOKENS,
     MIN_SYMPTOMS_FOR_COMPLETE, MAX_TURNS_BEFORE_COMPLETE,
@@ -55,16 +60,12 @@ from routers.caller import (
     _extract_symptoms_from_text,
     _generate_claude_response,
 )
+from services import session_store
+from services.navigator_store import get_navigator, persist_navigator, clear_navigator
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/twilio", tags=["twilio-voice"])
-
-# Per-call session state
-_call_sessions: dict[str, dict] = {}
-
-# In-memory cache for ElevenLabs audio (keyed by text hash, cleared per deploy)
-_tts_cache: dict[str, bytes] = {}
 
 
 # ─── XML helpers ────────────────────────────────────────────────────────────
@@ -118,8 +119,9 @@ async def tts_audio_for_twilio(text: str):
     text = text[:2000]
     cache_key = _tts_hash(text)
 
-    if cache_key in _tts_cache:
-        return Response(content=_tts_cache[cache_key], media_type="audio/mpeg")
+    cached = session_store.tts_cache_get(cache_key)
+    if cached:
+        return Response(content=cached, media_type="audio/mpeg")
 
     if not ELEVENLABS_API_KEY:
         return Response(status_code=503, content=b"ElevenLabs not configured")
@@ -139,7 +141,7 @@ async def tts_audio_for_twilio(text: str):
             logger.warning("[TTS] ElevenLabs HTTP %d for Twilio Play", resp.status_code)
             return Response(status_code=502, content=b"TTS error")
         audio = resp.content
-        _tts_cache[cache_key] = audio
+        session_store.tts_cache_set(cache_key, audio)
         return Response(content=audio, media_type="audio/mpeg")
     except Exception as exc:
         logger.warning("[TTS] ElevenLabs error for Twilio: %s", exc)
@@ -149,7 +151,11 @@ async def tts_audio_for_twilio(text: str):
 # ─── POST /twilio/voice — incoming call webhook ────────────────────────────
 
 @router.post("/voice")
-async def incoming_call(request: Request, db: Session = Depends(get_db)):
+async def incoming_call(
+    request: Request,
+    db: Session = Depends(get_db),
+    _twilio: None = Depends(verify_twilio_webhook),
+):
     """
     Twilio webhook fired when someone dials the service number.
     Starts a case, plays the verbal disclosure, and opens the first
@@ -159,23 +165,16 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)):
     caller_number = form.get("From", "")
     call_sid = form.get("CallSid", "unknown")
 
-    phone_info = parse_phone(caller_number)
-    if "error" in phone_info:
-        phone_info = {"country_code": "NG", "e164": caller_number or "+0000000000",
-                      "country_name": "Nigeria"}
-        logger.warning("[Twilio] Could not parse %s — defaulting to NG for demo", caller_number)
-
-    country_code = phone_info["country_code"]
+    j = normalize_caller_jurisdiction(db, caller_number)
+    phone_info = j["phone_info"]
+    country_code = j["jurisdiction_code"]
+    detected_cc = j.get("detected_country_code")
+    if detected_cc is None:
+        logger.warning("[Twilio] Could not parse caller number — Tier 4 jurisdiction: %s", caller_number)
 
     perms = check_teleconsult_allowed(db, country_code)
     if not perms["allowed"]:
-        DEMO_FALLBACK = "NG"
-        logger.info("[Twilio] Country %s not in permissions — falling back to %s for demo",
-                    country_code, DEMO_FALLBACK)
-        country_code = DEMO_FALLBACK
-        phone_info["country_code"] = DEMO_FALLBACK
-        phone_info["country_name"] = "Nigeria"
-        perms = check_teleconsult_allowed(db, country_code)
+        logger.warning("[Twilio] Teleconsult not allowed for %s — using guidance-only flow", country_code)
 
     patient = get_or_create_patient(db, phone_info["e164"], country_code, "en")
     case = create_case(
@@ -183,6 +182,15 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)):
         patient_id=patient.id,
         country_code=country_code,
         permission_tier=perms.get("permission_tier"),
+        detected_country_code=detected_cc,
+    )
+
+    _jp = get_jurisdiction_policy(detected_cc or country_code)
+    logger.info(
+        "[Twilio] Jurisdiction=%s detected=%s policy_tier=%s",
+        country_code,
+        detected_cc,
+        _jp.tier,
     )
 
     country_perm = (
@@ -193,15 +201,18 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)):
     sentences = verbal_disclosure.split(". ")
     shortened = ". ".join(sentences[:2]) + "." if len(sentences) > 2 else verbal_disclosure
 
-    _call_sessions[call_sid] = {
-        "case_id": case.id,
-        "turn": 1,
-        "collected_symptoms": [],
-        "message_history": [],
-        "ai_messages": [],  # for anti-repetition
-        "country_code": country_code,
-        "language": "en",   # will be updated after first speech
-    }
+    session_store.twilio_session_set(
+        call_sid,
+        {
+            "case_id": case.id,
+            "turn": 1,
+            "collected_symptoms": [],
+            "message_history": [],
+            "ai_messages": [],  # for anti-repetition
+            "country_code": country_code,
+            "language": "en",  # will be updated after first speech
+        },
+    )
 
     logger.info("[Twilio] Incoming call %s from %s — case %s", call_sid, country_code, case.id)
 
@@ -233,7 +244,11 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)):
 # ─── POST /twilio/gather — speech recognition result ───────────────────────
 
 @router.post("/gather")
-async def gather_speech(request: Request, db: Session = Depends(get_db)):
+async def gather_speech(
+    request: Request,
+    db: Session = Depends(get_db),
+    _twilio: None = Depends(verify_twilio_webhook),
+):
     """
     Twilio <Gather> callback — receives transcribed speech and drives
     the symptom-collection conversation turn by turn.
@@ -244,7 +259,7 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
     speech_result = form.get("SpeechResult", "")
     call_sid = form.get("CallSid", "unknown")
 
-    session = _call_sessions.get(call_sid)
+    session = session_store.twilio_session_get(call_sid)
     if not session:
         return _twiml(
             '  <Say voice="Polly.Joanna">Your session has expired. '
@@ -307,19 +322,15 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
     activated_conditions: list[dict] = []
     body_systems: list[str] = []
     graph_confidence = 0.0
+    kg_context_for_safety: dict | None = None
 
     if graph and all_symptoms:
         try:
-            from routers.knowledge_graph import _navigator_sessions
-            from knowledge_graph.navigator import ConversationNavigator
-
             case_id = session["case_id"]
-            if case_id not in _navigator_sessions:
-                _navigator_sessions[case_id] = ConversationNavigator(
-                    graph, case_id=case_id,
-                )
-            nav = _navigator_sessions[case_id]
+            nav = get_navigator(case_id, graph)
             context = nav.process_symptoms(all_symptoms)
+            persist_navigator(case_id, nav)
+            kg_context_for_safety = context
 
             suggested_questions = context.get("suggested_questions", [])[:3]
             graph_confidence = context.get("graph_confidence", 0.0)
@@ -333,13 +344,20 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
         except Exception as exc:
             logger.warning("[Twilio] KG navigation failed (non-blocking): %s", exc)
 
-    # ── 4. Emergency check (on English text) ──
-    is_emergency = check_emergency_keywords(english_speech)
-    emergency_flags: list[str] = []
-    if is_emergency:
-        from services.triage_service import EMERGENCY_KEYWORDS
-        lower = english_speech.lower()
-        emergency_flags = [kw.title() for kw in EMERGENCY_KEYWORDS if kw in lower]
+    # ── 4. Layered safety engine (same path as REST /caller) ──
+    rf = detect_red_flags(
+        speech_result or "",
+        country_code,
+        language=user_lang,
+        english_text=english_speech,
+        kg_context=kg_context_for_safety,
+    )
+    is_emergency = rf.is_emergency or rf.severity == RedFlagSeverity.URGENT
+    emergency_flags = [
+        (f.get("matched_text") or f.get("flag") or "").strip()
+        for f in rf.flags
+        if (f.get("matched_text") or f.get("flag"))
+    ]
 
     # ── 5. Completion criteria ───────────────────────────────────────────
     should_complete = (
@@ -411,7 +429,8 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
             await _submit_twilio_case(db, session)
         except Exception as exc:
             logger.error("[Twilio] Emergency case submission failed: %s", exc)
-        _call_sessions.pop(call_sid, None)
+        session_store.twilio_session_delete(call_sid)
+        clear_navigator(session.get("case_id", ""))
 
         emerg_msg = build_emergency_message(country_code, user_lang, emergency_flags)
         safe_emerg = _escape_xml(_truncate_for_tts(emerg_msg))
@@ -439,7 +458,8 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
                 logger.info("[Twilio] Case %s submitted on retry", session.get("case_id"))
             except Exception as exc2:
                 logger.error("[Twilio] Retry also failed: %s", exc2)
-        _call_sessions.pop(call_sid, None)
+        session_store.twilio_session_delete(call_sid)
+        clear_navigator(session.get("case_id", ""))
 
         symptom_list = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
         if submit_ok:
@@ -477,6 +497,8 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
         no_input_msg = translate_from_english(no_input_msg, user_lang)
     noinput_play = _speak_twiml(no_input_msg, voice, base_url)
 
+    session_store.twilio_session_set(call_sid, session)
+
     return _twiml(
         f'{resp_play}'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
@@ -502,12 +524,15 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
     user_text = " ".join(m["content"] for m in history if m.get("role") == "user")
 
     all_text = " ".join(symptoms) + " " + transcript
-    is_emergency = check_emergency_keywords(all_text)
-    red_flags: list[str] = []
-    if is_emergency:
-        from services.triage_service import EMERGENCY_KEYWORDS
-        lower = all_text.lower()
-        red_flags = [kw.title() for kw in EMERGENCY_KEYWORDS if kw in lower]
+    case_row = db.query(Case).filter_by(id=case_id).first()
+    cc = case_row.country_code if case_row else ""
+    rf_submit = detect_red_flags(all_text, cc, english_text=all_text)
+    is_emergency = rf_submit.is_emergency or rf_submit.severity == RedFlagSeverity.URGENT
+    red_flags = [
+        (f.get("matched_text") or f.get("flag") or "").strip()
+        for f in rf_submit.flags
+        if (f.get("matched_text") or f.get("flag"))
+    ]
 
     if is_emergency:
         triage_level = "RED"
@@ -572,11 +597,13 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
     # KG enrichment for voice calls too
     if is_knowledge_graph_enabled() and symptoms:
         try:
-            from routers.knowledge_graph import _graph, _navigator_sessions
+            from routers.knowledge_graph import _graph
             if _graph:
-                from knowledge_graph.navigator import ConversationNavigator
-                nav = ConversationNavigator(_graph, case_id=case_id)
+                from services.navigator_store import get_navigator
+
+                nav = get_navigator(case_id, _graph)
                 kg_context = nav.process_symptoms(symptoms)
+                persist_navigator(case_id, nav)
                 if kg_context.get("suggested_specialties"):
                     intake_data["recommended_specialty"] = kg_context["suggested_specialties"][0]["specialty"]
                 intake_data["kg_insights"] = {
@@ -584,11 +611,43 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
                     "suggested_specialties": kg_context.get("suggested_specialties", [])[:3],
                     "graph_confidence": kg_context.get("graph_confidence", 0),
                 }
-                _navigator_sessions[case_id] = nav
         except Exception as exc:
             logger.warning("[Twilio] KG enrichment failed (non-blocking): %s", exc)
 
     complete_intake(db, case_id, intake_data, icd11_flat)
+
+    # Full transcript for doctor dashboard (Phase 5)
+    log_payload = {
+        "channel": "twilio_voice",
+        "language": session.get("language", "en"),
+        "turns": history,
+        "symptoms_final": symptoms,
+        "triage_level": triage_level,
+    }
+    clinical_note = intake_data.get("patient_summary", "")
+    if ANTHROPIC_API_KEY and symptoms:
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            note_resp = client.messages.create(
+                model=CONVERSATION_MODEL,
+                max_tokens=200,
+                system=(
+                    "Write one short clinical handoff paragraph for a physician. "
+                    "No diagnosis. Symptoms, duration, severity if known."
+                ),
+                messages=[{"role": "user", "content": transcript[:4000]}],
+            )
+            clinical_note = note_resp.content[0].text.strip()
+        except Exception as exc:
+            logger.warning("[Twilio] Clinical note generation skipped: %s", exc)
+
+    log_payload["clinical_note"] = clinical_note
+    case_upd = db.query(Case).filter_by(id=case_id).first()
+    if case_upd:
+        case_upd.conversation_log = log_payload
+        db.commit()
+
     move_to_pending(db, case_id)
 
     logger.info(

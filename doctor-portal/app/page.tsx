@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { Case, Doctor } from "@/types";
-import { getCases, getDoctors, timeAgo } from "@/lib/api";
+import { getCases, getDoctors, timeAgo, subscribeCasesStream } from "@/lib/api";
 import StatsCard from "@/components/StatsCard";
 import PieChart from "@/components/PieChart";
 import BarChart from "@/components/BarChart";
@@ -37,7 +37,13 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, REFRESH_INTERVAL);
-    return () => clearInterval(interval);
+    const stopStream = subscribeCasesStream(() => {
+      fetchData();
+    });
+    return () => {
+      clearInterval(interval);
+      stopStream();
+    };
   }, [fetchData]);
 
   if (loading) return <LoadingSpinner text="Loading dashboard..." />;
@@ -200,7 +206,7 @@ export default function DashboardPage() {
                       }`}
                     />
                     <span className="text-xs text-gray-500">
-                      {doc.availability ? "Available" : "Offline"}
+                      {doc.availability === "online" ? "Available" : "Offline"}
                     </span>
                     {doc.verified && (
                       <span className="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded-full font-semibold ml-1">

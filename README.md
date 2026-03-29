@@ -12,6 +12,8 @@ An AI-powered telehealth platform for underserved populations. Users call a phon
 | Web Caller Simulator | https://claude-hackathon-u86l.onrender.com/call |
 | Phone Number | **+1 (478) 812-5405** |
 
+**Production deploy:** see [docs/DEPLOY.md](docs/DEPLOY.md) (Supabase `DATABASE_URL`, Render migrations, Twilio).
+
 ## How It Works
 
 ```
@@ -145,15 +147,11 @@ doctor-portal/
     index.ts                      # TypeScript interfaces
 ```
 
-### Caller API (Teammate 2's voice pipeline)
+### Archived caller API (LangGraph experiment)
 
-```
-src/
-  main.py                         # FastAPI server with LangGraph integration
-  config.py                       # Ollama/Whisper/Piper config + backend_url
-  graph.py                        # LangGraph pipeline: STT -> LLM -> TTS with emergency check
-  prompts.py                      # WHO-aligned system prompt with safety guardrails
-```
+Legacy `src/` tree is preserved under `archive/caller-api-v1/` (not wired to production).
+
+Production voice uses **Twilio** (`/twilio/*`) and the web caller (`/caller/*`) in the FastAPI backend.
 
 ## Knowledge Graph
 

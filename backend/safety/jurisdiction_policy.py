@@ -30,6 +30,7 @@ JURISDICTION_POLICIES = {
     "NG": JurisdictionPolicy("NG", 2, True, True, False, True, ["112", "199"], "en"),
     "KE": JurisdictionPolicy("KE", 3, True, False, False, True, ["999", "112"], "sw"),
     "PH": JurisdictionPolicy("PH", 3, True, False, False, True, ["911", "143"], "tl"),
+    "ZZ": JurisdictionPolicy("ZZ", 4, False, False, False, True, ["112", "911", "999"], "en"),
 }
 
 

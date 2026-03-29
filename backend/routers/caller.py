@@ -66,12 +66,12 @@ from config import (
 )
 
 import logging
+from services import session_store
+from services.navigator_store import get_navigator, persist_navigator, clear_navigator
+
 kg_logger = logging.getLogger(__name__)
 
 _anthropic_client = None
-
-# Per-session language tracking: case_id → detected language code
-_session_languages: dict[str, str] = {}
 
 
 def _get_anthropic():
@@ -192,7 +192,7 @@ async def start_session(req: SessionStartRequest, db: Session = Depends(get_db))
     verbal_disclosure = _build_verbal_disclosure(country_perm)
 
     # Track session language and translate disclosure if needed
-    _session_languages[case.id] = req.language
+    session_store.case_language_set(case.id, req.language)
     if req.language != "en":
         verbal_disclosure = translate_disclosure(verbal_disclosure, req.language)
 
@@ -227,6 +227,10 @@ async def record_consent(req: ConsentRequest, db: Session = Depends(get_db)):
     Record that the patient acknowledged the capability disclaimer.
     Per SDD Section 3, this must happen before any clinical exchange.
     """
+    from datetime import datetime, timezone
+
+    from domain.models_ext import ConsentEventRecord
+
     case = db.query(Case).filter_by(id=req.case_id).first()
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -237,11 +241,25 @@ async def record_consent(req: ConsentRequest, db: Session = Depends(get_db)):
         patient.consent_given = req.consent_given
     case.disclaimer_shown = True
 
+    db.add(
+        ConsentEventRecord(
+            case_id=case.id,
+            patient_id=case.patient_id,
+            consent_type="capability_disclaimer",
+            accepted=req.consent_given,
+            channel="web",
+            metadata_json={
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    )
+
     db.commit()
     return {
         "status": "consent_recorded",
         "case_id": case.id,
         "consent_given": req.consent_given,
+        "consent_timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -308,7 +326,7 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
 
     # ── Layered red flag detection (Phase 03 safety engine) ────────────
     all_text = " ".join(req.symptoms) + " " + req.transcript_summary
-    session_lang = _session_languages.get(req.case_id, "en")
+    session_lang = session_store.case_language_get(req.case_id) or "en"
     red_flag_result = detect_red_flags(
         text=all_text,
         language=session_lang,
@@ -329,8 +347,9 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
                 red_flags.append(kw.title())
     # Merge safety engine flags
     for flag_info in red_flag_result.flags:
-        flag_name = flag_info["flag"].split(":")[-1].title()
-        if flag_name not in red_flags:
+        raw_flag = flag_info.get("flag") or flag_info.get("matched_text") or ""
+        flag_name = str(raw_flag).split(":")[-1].title() if raw_flag else ""
+        if flag_name and flag_name not in red_flags:
             red_flags.append(flag_name)
     red_flags = list(dict.fromkeys(red_flags))
 
@@ -381,11 +400,11 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
     kg_insights = {}
     if is_knowledge_graph_enabled():
         try:
-            from routers.knowledge_graph import _graph, _navigator_sessions
+            from routers.knowledge_graph import _graph
             if _graph:
-                from knowledge_graph.navigator import ConversationNavigator
-                nav = ConversationNavigator(_graph, case_id=req.case_id)
+                nav = get_navigator(req.case_id, _graph)
                 kg_context = nav.process_symptoms(req.symptoms)
+                persist_navigator(req.case_id, nav)
 
                 # Use graph to refine recommended specialty
                 if kg_context.get("suggested_specialties"):
@@ -399,9 +418,6 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
                     "body_systems": kg_context.get("activated_body_systems", [])[:3],
                 }
                 intake_data["kg_insights"] = kg_insights
-
-                # Store navigator for future backpropagation
-                _navigator_sessions[req.case_id] = nav
                 kg_logger.info("[KG] Case %s enriched: specialty=%s confidence=%.2f",
                               req.case_id,
                               intake_data.get("recommended_specialty"),
@@ -433,6 +449,13 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
     case.triage_breakdown = triage_breakdown
     case.detected_language = session_lang
     case.priority_score = triage_breakdown["total_priority"]
+    case.conversation_log = {
+        "channel": "web_caller",
+        "turns": req.message_history,
+        "transcript_summary": req.transcript_summary,
+        "symptoms_final": req.symptoms,
+        "triage_level": triage_level,
+    }
     db.commit()
     db.refresh(case)
 
@@ -970,12 +993,6 @@ def _generate_claude_response(
     )
 
 
-# Tracks turns with no new symptoms per case for auto-completion
-_stale_turn_tracker: dict[str, int] = {}
-# Tracks previous AI messages per case for anti-repetition
-_ai_message_history: dict[str, list[str]] = {}
-
-
 @router.post("/ai-turn", response_model=AITurnResponse)
 async def ai_conversation_turn(req: AITurnRequest):
     """
@@ -997,7 +1014,7 @@ async def ai_conversation_turn(req: AITurnRequest):
         if detected != "en":
             user_lang = detected
             kg_logger.info("[AI Turn] Detected language: %s for case %s", user_lang, req.case_id)
-    _session_languages[req.case_id] = user_lang
+    session_store.case_language_set(req.case_id, user_lang)
 
     # Translate to English for all clinical processing
     english_message = req.user_message
@@ -1039,15 +1056,9 @@ async def ai_conversation_turn(req: AITurnRequest):
 
     if graph and all_symptoms:
         try:
-            from routers.knowledge_graph import _navigator_sessions
-            from knowledge_graph.navigator import ConversationNavigator
-
-            if req.case_id not in _navigator_sessions:
-                _navigator_sessions[req.case_id] = ConversationNavigator(
-                    graph, case_id=req.case_id
-                )
-            nav = _navigator_sessions[req.case_id]
+            nav = get_navigator(req.case_id, graph)
             context = nav.process_symptoms(all_symptoms)
+            persist_navigator(req.case_id, nav)
 
             suggested_questions = context.get("suggested_questions", [])[:3]
             activated_conditions = [
@@ -1071,12 +1082,13 @@ async def ai_conversation_turn(req: AITurnRequest):
 
     # ── 6. Determine completion (smarter heuristics from config) ──
     new_count = len([s for s in detected_symptoms if s not in req.collected_symptoms])
+    prev_stale = session_store.case_stale_get(req.case_id)
     if new_count == 0:
-        _stale_turn_tracker[req.case_id] = _stale_turn_tracker.get(req.case_id, 0) + 1
+        session_store.case_stale_set(req.case_id, prev_stale + 1)
     else:
-        _stale_turn_tracker[req.case_id] = 0
+        session_store.case_stale_set(req.case_id, 0)
 
-    stale_turns = _stale_turn_tracker.get(req.case_id, 0)
+    stale_turns = session_store.case_stale_get(req.case_id)
     should_complete = (
         is_emergency
         or len(all_symptoms) >= MIN_SYMPTOMS_FOR_COMPLETE
@@ -1135,7 +1147,7 @@ async def ai_conversation_turn(req: AITurnRequest):
         pass
 
     # ── 10. Generate AI response via Claude (in English) ──
-    previous_msgs = _ai_message_history.get(req.case_id, [])
+    previous_msgs = session_store.case_ai_history_get(req.case_id)
     ai_message_english = _generate_claude_response(
         turn_number=req.turn_number,
         user_message=english_message,
@@ -1153,9 +1165,7 @@ async def ai_conversation_turn(req: AITurnRequest):
     )
 
     # Track for anti-repetition
-    if req.case_id not in _ai_message_history:
-        _ai_message_history[req.case_id] = []
-    _ai_message_history[req.case_id].append(ai_message_english)
+    session_store.case_ai_history_append(req.case_id, ai_message_english)
 
     # ── 11. Translate AI response to user's language ──
     ai_message = ai_message_english
@@ -1191,10 +1201,10 @@ async def ai_conversation_turn(req: AITurnRequest):
             kg_logger.warning("[Claude] Summary generation failed: %s", exc)
             transcript_summary = f"Patient reports: {', '.join(all_symptoms)}."
 
-        # Clean up session tracking on completion
-        _stale_turn_tracker.pop(req.case_id, None)
-        _ai_message_history.pop(req.case_id, None)
-        _session_languages.pop(req.case_id, None)
+        # Clean up ephemeral turn tracking (KG navigator kept for submit/backprop)
+        session_store.case_stale_delete(req.case_id)
+        session_store.case_ai_history_delete(req.case_id)
+        session_store.case_language_delete(req.case_id)
 
     return AITurnResponse(
         ai_message=ai_message,

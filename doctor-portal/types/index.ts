@@ -30,6 +30,7 @@ export interface Case {
   triageBreakdown?: TriageBreakdown;
   // Phase 04: Clinician explainability
   explainability?: CaseExplainability;
+  conversationLog?: Record<string, unknown>;
 }
 
 // Phase 01: Explainable triage scoring

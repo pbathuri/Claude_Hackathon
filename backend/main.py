@@ -30,6 +30,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+if os.environ.get("SENTRY_DSN"):
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=os.environ["SENTRY_DSN"],
+            traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
+        )
+    except ImportError:
+        logger.warning("SENTRY_DSN set but sentry-sdk not installed")
+
 # Feature flags
 DEMO_MODE = os.environ.get("DEMO_MODE", "1") == "1"
 if DEMO_MODE:
@@ -138,45 +148,49 @@ def root():
 
 @app.get("/health-check")
 def health_check():
+    """Liveness probe; does not expose secret metadata."""
     from config import (
-        ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID,
-        REDIS_URL, TWILIO_ACCOUNT_SID, ANTHROPIC_API_KEY,
+        ELEVENLABS_API_KEY,
+        REDIS_URL,
+        TWILIO_ACCOUNT_SID,
+        ANTHROPIC_API_KEY,
         CONVERSATION_MODEL,
     )
+    from database import engine
+    from sqlalchemy import text
+
+    db_ok = False
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        logger.exception("health-check database ping failed")
+
+    redis_ok = False
+    if REDIS_URL:
+        try:
+            import redis as redis_lib
+
+            r = redis_lib.from_url(REDIS_URL, socket_connect_timeout=2)
+            r.ping()
+            redis_ok = True
+        except Exception:
+            logger.exception("health-check redis ping failed")
+
     return {
         "status": "healthy",
+        "dependencies": {
+            "database": db_ok,
+            "redis": redis_ok if REDIS_URL else None,
+        },
         "apis": {
-            "claude": bool(ANTHROPIC_API_KEY),
+            "claude_configured": bool(ANTHROPIC_API_KEY),
             "claude_model": CONVERSATION_MODEL,
-            "claude_key_len": len(ANTHROPIC_API_KEY),
-            "elevenlabs": bool(ELEVENLABS_API_KEY),
-            "twilio": bool(TWILIO_ACCOUNT_SID),
-            "redis": bool(REDIS_URL),
-            "knowledge_graph": is_knowledge_graph_enabled(),
-            "hf_token": bool(os.environ.get("HF_TOKEN", "")),
+            "elevenlabs_configured": bool(ELEVENLABS_API_KEY),
+            "twilio_configured": bool(TWILIO_ACCOUNT_SID),
+            "redis_configured": bool(REDIS_URL),
+            "knowledge_graph_enabled": is_knowledge_graph_enabled(),
+            "hf_fallback_configured": bool(os.environ.get("HF_TOKEN", "")),
         },
     }
-
-
-@app.get("/debug/claude-test")
-def debug_claude():
-    """Quick test of Claude API to verify connectivity."""
-    from config import ANTHROPIC_API_KEY, CONVERSATION_MODEL
-    if not ANTHROPIC_API_KEY:
-        return {"error": "ANTHROPIC_API_KEY not set", "key_len": 0}
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = client.messages.create(
-            model=CONVERSATION_MODEL,
-            max_tokens=50,
-            messages=[{"role": "user", "content": "Say hello in one sentence."}],
-        )
-        return {
-            "ok": True,
-            "model": CONVERSATION_MODEL,
-            "response": resp.content[0].text,
-            "key_len": len(ANTHROPIC_API_KEY),
-        }
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "model": CONVERSATION_MODEL, "key_len": len(ANTHROPIC_API_KEY)}

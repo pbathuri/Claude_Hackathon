@@ -1,6 +1,8 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+alembic==1.14.0
 pydantic==2.10.3
 anthropic==0.42.0
 phonenumbers==8.13.52
@@ -10,3 +12,5 @@ httpx==0.28.1
 apscheduler==3.10.4
 python-multipart==0.0.22
 redis==5.2.1
+twilio==9.3.1
+sentry-sdk[fastapi]==2.19.2

@@ -11,8 +11,10 @@ Exposes the bio-inspired medical knowledge graph for:
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+
+from auth.middleware import get_current_actor
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,6 @@ router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
 
 # ── Singleton graph instance (initialized in main.py lifespan) ───────────────
 _graph = None
-_navigator_sessions = {}  # case_id → ConversationNavigator
 _backpropagator = None
 _doctor_matcher = None
 
@@ -93,15 +94,9 @@ async def navigate(request: NavigateRequest):
     """
     graph = get_graph()
 
-    from knowledge_graph.navigator import ConversationNavigator
+    from services.navigator_store import get_navigator, persist_navigator
 
-    # Get or create navigator for this case
-    if request.case_id not in _navigator_sessions:
-        _navigator_sessions[request.case_id] = ConversationNavigator(
-            graph, case_id=request.case_id
-        )
-
-    nav = _navigator_sessions[request.case_id]
+    nav = get_navigator(request.case_id, graph)
 
     # Process transcript if provided (extract symptoms from voice)
     if request.transcript:
@@ -112,6 +107,8 @@ async def navigate(request: NavigateRequest):
         context = nav.process_symptoms(request.symptoms)
     else:
         context = nav.process_symptoms([])
+
+    persist_navigator(request.case_id, nav)
 
     # Check for emergencies
     emergency = nav.check_emergency()
@@ -156,17 +153,26 @@ async def quick_query(request: QuickQueryRequest):
 @router.post("/navigate/question-asked")
 async def mark_question_asked(case_id: str, question_id: str):
     """Mark a suggested question as asked, so it won't be suggested again."""
-    if case_id not in _navigator_sessions:
+    from services.navigator_store import get_navigator, persist_navigator
+    from services import session_store
+
+    graph = get_graph()
+    if not session_store.case_nav_get(case_id):
         raise HTTPException(status_code=404, detail="No active navigation session for this case")
 
-    _navigator_sessions[case_id].mark_question_asked(question_id)
+    nav = get_navigator(case_id, graph)
+    nav.mark_question_asked(question_id)
+    persist_navigator(case_id, nav)
     return {"status": "ok"}
 
 
 # ── Backpropagation Endpoints ────────────────────────────────────────────────
 
 @router.post("/backpropagate")
-async def backpropagate(request: BackpropRequest):
+async def backpropagate(
+    request: BackpropRequest,
+    _actor: dict = Depends(get_current_actor),
+):
     """
     Backpropagate learning from a completed case.
     Call this after the doctor provides their diagnosis and the case is resolved.
@@ -179,11 +185,13 @@ async def backpropagate(request: BackpropRequest):
         from knowledge_graph.backpropagator import GraphBackpropagator
         _backpropagator = GraphBackpropagator(graph)
 
-    # Get the conversation trace
-    nav = _navigator_sessions.get(request.case_id)
-    if not nav:
+    from services import session_store
+    from services.navigator_store import get_navigator, clear_navigator
+
+    if not session_store.case_nav_get(request.case_id):
         raise HTTPException(status_code=404, detail="No navigation trace for this case")
 
+    nav = get_navigator(request.case_id, graph)
     trace = nav.get_trace()
 
     result = _backpropagator.backpropagate(
@@ -206,8 +214,7 @@ async def backpropagate(request: BackpropRequest):
     if graph.persist_path:
         graph.save()
 
-    # Clean up navigation session
-    _navigator_sessions.pop(request.case_id, None)
+    clear_navigator(request.case_id)
 
     return result
 
