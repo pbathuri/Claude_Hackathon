@@ -1261,8 +1261,12 @@ async def text_to_speech(req: TTSRequest):
         raise HTTPException(status_code=502, detail="TTS service unavailable")
 
     if resp.status_code != 200:
-        kg_logger.warning("[TTS] ElevenLabs HTTP %d: %s", resp.status_code, resp.text[:200])
-        raise HTTPException(status_code=502, detail="TTS service error")
+        err_body = resp.text[:500]
+        kg_logger.warning("[TTS] ElevenLabs HTTP %d: %s", resp.status_code, err_body)
+        raise HTTPException(
+            status_code=502,
+            detail=f"TTS error {resp.status_code}: {err_body}",
+        )
 
     return StreamingResponse(
         iter([resp.content]),
