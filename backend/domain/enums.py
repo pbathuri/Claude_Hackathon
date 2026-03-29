@@ -7,19 +7,16 @@ from enum import Enum
 
 
 class CaseStatus(str, Enum):
-    CREATED = "created"
-    ACTIVE_INTAKE = "active_intake"
+    # Values match the DB case_status_enum exactly (models.py CASE_STATUS_VALUES)
+    CREATED = "open"
     INTAKE_COMPLETE = "intake_complete"
-    PENDING_REVIEW = "pending_review"
+    PENDING_REVIEW = "pending"
     ASSIGNED = "assigned"
-    IN_REVIEW = "in_review"
-    RESPONDED = "responded"
-    FOLLOWUP_PENDING = "followup_pending"
-    FOLLOWUP_REPLIED = "followup_replied"
+    IN_REVIEW = "in_progress"
+    RESPONDED = "resolved"
     ESCALATED = "escalated"
     EXPIRED = "expired"
     CLOSED = "closed"
-    INSUFFICIENT_INFORMATION = "insufficient_information"
 
 
 class TriageLevel(str, Enum):
@@ -79,18 +76,14 @@ class ExtractionProvenance(str, Enum):
 # CLOSED is a terminal state with no outgoing transitions.
 
 VALID_TRANSITIONS: dict[CaseStatus, set[CaseStatus]] = {
-    CaseStatus.CREATED: {CaseStatus.ACTIVE_INTAKE, CaseStatus.INSUFFICIENT_INFORMATION},
-    CaseStatus.ACTIVE_INTAKE: {CaseStatus.INTAKE_COMPLETE, CaseStatus.INSUFFICIENT_INFORMATION, CaseStatus.ESCALATED},
+    CaseStatus.CREATED: {CaseStatus.INTAKE_COMPLETE, CaseStatus.ESCALATED},
     CaseStatus.INTAKE_COMPLETE: {CaseStatus.PENDING_REVIEW, CaseStatus.ESCALATED},
     CaseStatus.PENDING_REVIEW: {CaseStatus.ASSIGNED, CaseStatus.EXPIRED, CaseStatus.ESCALATED},
     CaseStatus.ASSIGNED: {CaseStatus.IN_REVIEW, CaseStatus.EXPIRED, CaseStatus.ESCALATED},
     CaseStatus.IN_REVIEW: {CaseStatus.RESPONDED, CaseStatus.ESCALATED},
-    CaseStatus.RESPONDED: {CaseStatus.FOLLOWUP_PENDING, CaseStatus.CLOSED},
-    CaseStatus.FOLLOWUP_PENDING: {CaseStatus.FOLLOWUP_REPLIED, CaseStatus.EXPIRED, CaseStatus.ESCALATED},
-    CaseStatus.FOLLOWUP_REPLIED: {CaseStatus.CLOSED, CaseStatus.ESCALATED, CaseStatus.PENDING_REVIEW},
+    CaseStatus.RESPONDED: {CaseStatus.CLOSED},
     CaseStatus.ESCALATED: {CaseStatus.ASSIGNED, CaseStatus.CLOSED},
     CaseStatus.EXPIRED: {CaseStatus.PENDING_REVIEW, CaseStatus.CLOSED},
-    CaseStatus.INSUFFICIENT_INFORMATION: {CaseStatus.ACTIVE_INTAKE, CaseStatus.CLOSED},
     CaseStatus.CLOSED: set(),
 }
 

@@ -64,6 +64,7 @@ from routers.caller import (
 )
 from services import session_store
 from services.navigator_store import get_navigator, persist_navigator, clear_navigator
+from domain.models_ext import ConversationTurnRecord
 
 logger = logging.getLogger(__name__)
 
@@ -422,7 +423,7 @@ async def gather_speech(
 
     # ── 6. Generate AI response (in English) ─────────────────────────────
     ai_response = None
-    prior_history = session["message_history"][:-1]
+    prior_history = session["message_history"]
 
     try:
         ai_response = _generate_claude_response(
@@ -472,6 +473,34 @@ async def gather_speech(
 
     session["message_history"].append({"role": "assistant", "content": ai_response})
     session["turn"] = turn + 1
+
+    # Persist per-turn transcript records
+    try:
+        case_id = session.get("case_id", "")
+        if case_id:
+            db.add(ConversationTurnRecord(
+                case_id=case_id,
+                turn_index=(turn - 1) * 2 + 1,
+                actor_type="patient",
+                channel="twilio",
+                language=user_lang,
+                text=speech_result or "",
+                original_text=speech_result if user_lang != "en" else None,
+                original_language=user_lang if user_lang != "en" else None,
+                translated_text=english_speech if user_lang != "en" else None,
+            ))
+            db.add(ConversationTurnRecord(
+                case_id=case_id,
+                turn_index=(turn - 1) * 2 + 2,
+                actor_type="assistant",
+                channel="twilio",
+                language=user_lang,
+                text=spoken_response,
+                translated_text=spoken_response if user_lang != "en" else None,
+            ))
+            db.commit()
+    except Exception as exc:
+        logger.warning("[Twilio] ConversationTurnRecord write failed (non-blocking): %s", exc)
 
     base_url = str(request.base_url).rstrip("/")
     resp_play = _speak_twiml(spoken_response, voice, base_url)

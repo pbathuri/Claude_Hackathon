@@ -13,12 +13,12 @@ from models import (
 )
 from services.triage_service import triage_from_intake, get_base_score
 from services.priority_queue import compute_priority_score
-from services.country_service import country_display_name_for_portal
 from schemas.intake import (
     normalize_intake_dict,
     build_symptom_summary_line,
 )
 from domain.enums import CaseStatus, validate_transition, TriageLevel, UrgencyDisplay
+from domain.models_ext import ClinicalExtractionRecord
 
 
 # ── Urgency + Tier scoring for frontend contract ──
@@ -166,6 +166,18 @@ def complete_intake(db: Session, case_id: str, intake_data: dict,
         severity=intake_data.get("severity"),
         transcript_text=intake_data.get("patient_summary"),
     ))
+
+    # Write structured clinical extraction record (upsert: only one per case)
+    existing_extraction = db.query(ClinicalExtractionRecord).filter_by(case_id=case_id).first()
+    if not existing_extraction:
+        db.add(ClinicalExtractionRecord(
+            case_id=case_id,
+            extraction_json=intake_data,
+            overall_confidence=float(intake_data.get("graph_confidence", 0.0)),
+            extraction_complete=True,
+            uncertainty_flags=intake_data.get("uncertainty_flags", []),
+            scoring_json={"triage": triage, "priority_score": case.priority_score},
+        ))
 
     _audit(db, "intake_complete", "case", case_id, actor_type="system",
            details={"triage_level": triage})
@@ -514,17 +526,6 @@ def get_case_for_frontend(db: Session, case_id: str) -> dict | None:
         country_code=case.country_code
     ).first()
 
-    _perm_codes = {case.country_code} if case.country_code else set()
-    dc = getattr(case, "detected_country_code", None)
-    if dc:
-        _perm_codes.add(dc)
-    _portal_perm_rows = (
-        db.query(CountryPermission).filter(CountryPermission.country_code.in_(_perm_codes)).all()
-        if _perm_codes
-        else []
-    )
-    _portal_perms = {p.country_code: p for p in _portal_perm_rows}
-
     intake = case.intake_data or {}
     image_urls = [
         f"/uploads/{img.file_path}" for img in case.images if img.file_path
@@ -555,11 +556,7 @@ def get_case_for_frontend(db: Session, case_id: str) -> dict | None:
     return {
         "caseId": case.id,
         "patientAlias": case.patient_alias or f"PT-{case.id[:4].upper()}",
-        "country": country_display_name_for_portal(
-            case.country_code,
-            getattr(case, "detected_country_code", None),
-            _portal_perms,
-        ),
+        "country": country_perm.country_name if country_perm else case.country_code,
         "countryTier": country_perm.country_tier if country_perm else 3,
         "urgency": TRIAGE_TO_FRONTEND_URGENCY.get(case.triage_level or "GREEN", "Low"),
         "symptomSummary": symptom_line,
@@ -604,13 +601,7 @@ def get_all_cases_for_frontend(db: Session, status: str | None = None,
         return []
 
     patient_ids = {c.patient_id for c in cases if c.patient_id}
-    country_codes: set[str] = set()
-    for c in cases:
-        if c.country_code:
-            country_codes.add(c.country_code)
-        dcc = getattr(c, "detected_country_code", None)
-        if dcc:
-            country_codes.add(dcc)
+    country_codes = {c.country_code for c in cases if c.country_code}
     patients = {
         p.id: p
         for p in db.query(Patient).filter(Patient.id.in_(patient_ids)).all()
@@ -639,11 +630,7 @@ def get_all_cases_for_frontend(db: Session, status: str | None = None,
         results.append({
             "caseId": case.id,
             "patientAlias": case.patient_alias or f"PT-{case.id[:4].upper()}",
-            "country": country_display_name_for_portal(
-                case.country_code,
-                getattr(case, "detected_country_code", None),
-                perms,
-            ),
+            "country": country_perm.country_name if country_perm else case.country_code,
             "countryTier": country_perm.country_tier if country_perm else 3,
             "urgency": TRIAGE_TO_FRONTEND_URGENCY.get(case.triage_level or "GREEN", "Low"),
             "symptomSummary": symptom_line,

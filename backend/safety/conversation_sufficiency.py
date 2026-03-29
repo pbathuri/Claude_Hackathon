@@ -35,7 +35,7 @@ def check_sufficiency(extraction: dict, symptom_count: int = 0, turn_count: int 
 
     has_required = len(result.missing_required) == 0
     has_enough_symptoms = symptom_count >= 3
-    has_enough_turns = turn_count >= 4
+    has_enough_turns = turn_count >= 8
 
     if has_required and has_enough_symptoms:
         result.sufficient = True
@@ -43,7 +43,7 @@ def check_sufficiency(extraction: dict, symptom_count: int = 0, turn_count: int 
     elif has_enough_turns and has_enough_symptoms:
         result.sufficient = True
         result.recommendation = "submit_with_gaps"
-    elif turn_count >= 8:
+    elif turn_count >= 16:
         result.sufficient = True
         result.recommendation = "submit_timeout"
     else:

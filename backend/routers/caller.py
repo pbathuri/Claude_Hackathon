@@ -69,11 +69,13 @@ from config import (
     ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID,
     MAX_TURNS_BEFORE_COMPLETE, MIN_SYMPTOMS_FOR_COMPLETE,
     STALE_TURNS_FOR_COMPLETE, GRAPH_CONFIDENCE_THRESHOLD,
+    ENABLE_HUGGINGFACE_FALLBACK,
 )
 
 import logging
 from services import session_store
 from services.navigator_store import get_navigator, persist_navigator, clear_navigator
+from domain.models_ext import ConversationTurnRecord
 
 kg_logger = logging.getLogger(__name__)
 
@@ -745,6 +747,8 @@ class AITurnResponse(BaseModel):
     # Active UI/session language for TTS & follow-up turns; switches when input is detected as another language
     conversation_language: str = "en"
     language_changed: bool = False
+    # "full" = KG loaded and used | "keyword_only" = KG enabled but unavailable | "disabled" = ENABLE_KNOWLEDGE_GRAPH=false
+    kg_mode: str = "full"
 
 
 def _extract_symptoms_from_text(text: str, graph) -> list[str]:
@@ -839,7 +843,7 @@ def _generate_claude_response(
     asked_qs = set()
     if previous_ai_messages:
         for msg in previous_ai_messages:
-            asked_qs.add(msg.lower()[:80])
+            asked_qs.add(msg.lower())
     fresh_questions = []
     if suggested_questions:
         for q in suggested_questions:
@@ -983,14 +987,15 @@ def _generate_claude_response(
     except Exception as exc:
         kg_logger.error("[Claude] API call failed: %s", exc, exc_info=True)
 
-    # --- Secondary: HuggingFace medical model via Inference API ---
-    try:
-        hf_result = _call_huggingface_medical(system_prompt, messages, user_message)
-        if hf_result:
-            kg_logger.info("[HuggingFace] Turn %d OK: %s", turn_number, hf_result[:80])
-            return hf_result
-    except Exception as exc:
-        kg_logger.warning("[HuggingFace] Fallback also failed: %s", exc)
+    # --- Secondary: HuggingFace medical model via Inference API (opt-in via ENABLE_HUGGINGFACE_FALLBACK=true) ---
+    if ENABLE_HUGGINGFACE_FALLBACK:
+        try:
+            hf_result = _call_huggingface_medical(system_prompt, messages, user_message)
+            if hf_result:
+                kg_logger.info("[HuggingFace] Turn %d OK: %s", turn_number, hf_result[:80])
+                return hf_result
+        except Exception as exc:
+            kg_logger.warning("[HuggingFace] Fallback also failed: %s", exc)
 
     # --- Tertiary: rule-based fallback ---
     kg_logger.warning("[Fallback] Using rule-based for turn %d", turn_number)
@@ -1229,6 +1234,42 @@ async def ai_conversation_turn(req: AITurnRequest, db: Session = Depends(get_db)
         session_store.case_ai_history_delete(req.case_id)
         session_store.case_language_delete(req.case_id)
 
+    # ── 12. Determine KG mode for caller visibility ──
+    if graph is not None:
+        kg_mode = "full"
+    elif is_knowledge_graph_enabled():
+        kg_mode = "keyword_only"  # KG configured but unavailable at runtime
+    else:
+        kg_mode = "disabled"
+
+    # ── 13. Persist per-turn transcript records ──
+    try:
+        patient_turn = ConversationTurnRecord(
+            case_id=req.case_id,
+            turn_index=(req.turn_number - 1) * 2 + 1,
+            actor_type="patient",
+            channel="web",
+            language=user_lang,
+            text=req.user_message,
+            original_text=req.user_message if user_lang != "en" else None,
+            original_language=user_lang if user_lang != "en" else None,
+            translated_text=english_message if user_lang != "en" else None,
+        )
+        ai_turn = ConversationTurnRecord(
+            case_id=req.case_id,
+            turn_index=(req.turn_number - 1) * 2 + 2,
+            actor_type="assistant",
+            channel="web",
+            language=user_lang,
+            text=ai_message,
+            translated_text=ai_message if user_lang != "en" else None,
+        )
+        db.add(patient_turn)
+        db.add(ai_turn)
+        db.commit()
+    except Exception as exc:
+        kg_logger.warning("[AI Turn] ConversationTurnRecord write failed (non-blocking): %s", exc)
+
     return AITurnResponse(
         ai_message=ai_message,
         detected_symptoms=detected_symptoms,
@@ -1246,6 +1287,7 @@ async def ai_conversation_turn(req: AITurnRequest, db: Session = Depends(get_db)
         transcript_summary=transcript_summary,
         conversation_language=user_lang,
         language_changed=language_changed,
+        kg_mode=kg_mode,
     )
 
 

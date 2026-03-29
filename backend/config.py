@@ -102,7 +102,7 @@ DOCTOR_RESPONSE_TIMEOUT_HOURS = 2
 FOLLOWUP_HOURS = [24, 48]
 
 # --- Conversation Flow ---
-MAX_TURNS_BEFORE_COMPLETE = 8
+MAX_TURNS_BEFORE_COMPLETE = 16
 MIN_SYMPTOMS_FOR_COMPLETE = 5
 STALE_TURNS_FOR_COMPLETE = 2
 GRAPH_CONFIDENCE_THRESHOLD = 0.7
@@ -117,3 +117,6 @@ WHO_INDICATORS = {
 
 # --- NLM ICD-11 API (no auth required) ---
 NLM_ICD11_URL = "https://clinicaltables.nlm.nih.gov/api/icd11_codes/v3/search"
+
+# --- HuggingFace fallback (off by default — only enable with a valid HF_TOKEN) ---
+ENABLE_HUGGINGFACE_FALLBACK = os.getenv("ENABLE_HUGGINGFACE_FALLBACK", "false").lower() in ("1", "true", "yes")

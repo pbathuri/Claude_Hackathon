@@ -38,33 +38,8 @@ class UncertaintyState(str, enum.Enum):
     ESCALATION_REQUIRED = "escalation_required"
 
 
-class CaseStatus(str, enum.Enum):
-    """Canonical case status with enforced transitions."""
-    CREATED = "created"
-    ACTIVE_INTAKE = "active_intake"
-    PENDING_REVIEW = "pending_review"
-    ASSIGNED = "assigned"
-    IN_REVIEW = "in_review"
-    RESPONDED = "responded"
-    FOLLOWUP_PENDING = "followup_pending"
-    ESCALATED = "escalated"
-    EXPIRED = "expired"
-    CLOSED = "closed"
-
-
-# Valid state transitions: from_status → set of allowed to_statuses
-VALID_TRANSITIONS: dict[CaseStatus, set[CaseStatus]] = {
-    CaseStatus.CREATED: {CaseStatus.ACTIVE_INTAKE},
-    CaseStatus.ACTIVE_INTAKE: {CaseStatus.PENDING_REVIEW, CaseStatus.ESCALATED},
-    CaseStatus.PENDING_REVIEW: {CaseStatus.ASSIGNED, CaseStatus.ESCALATED, CaseStatus.EXPIRED},
-    CaseStatus.ASSIGNED: {CaseStatus.IN_REVIEW, CaseStatus.ESCALATED, CaseStatus.EXPIRED},
-    CaseStatus.IN_REVIEW: {CaseStatus.RESPONDED, CaseStatus.ESCALATED},
-    CaseStatus.RESPONDED: {CaseStatus.FOLLOWUP_PENDING, CaseStatus.CLOSED},
-    CaseStatus.FOLLOWUP_PENDING: {CaseStatus.ESCALATED, CaseStatus.CLOSED},
-    CaseStatus.ESCALATED: {CaseStatus.ASSIGNED, CaseStatus.CLOSED},
-    CaseStatus.EXPIRED: {CaseStatus.ASSIGNED, CaseStatus.CLOSED},
-    CaseStatus.CLOSED: set(),
-}
+# Import the single canonical CaseStatus + VALID_TRANSITIONS from domain/enums
+from domain.enums import CaseStatus, VALID_TRANSITIONS  # noqa: F401
 
 
 def validate_transition(from_status: str, to_status: str) -> bool:

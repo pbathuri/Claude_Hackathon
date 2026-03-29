@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, String, Integer, Float, Boolean, DateTime, Text, ForeignKey,
+    Column, String, Float, Boolean, DateTime, ForeignKey,
 )
 
 from database import Base
@@ -62,17 +62,3 @@ class ClinicalExtractionRecord(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class OutboxJob(Base):
-    __tablename__ = "outbox_jobs"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    job_type = Column(String(50), nullable=False, index=True)
-    case_id = Column(String, ForeignKey("cases.id"), nullable=True)
-    payload = Column(JSONCompat, nullable=False, default=dict)
-    status = Column(String(20), default="pending")
-    attempts = Column(Integer, default=0)
-    max_attempts = Column(Integer, default=3)
-    scheduled_at = Column(DateTime, default=datetime.utcnow)
-    completed_at = Column(DateTime, nullable=True)
-    error = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)

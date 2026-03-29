@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ────────────────────────────────────────────────────────
 
-MAX_TURNS_HARD_LIMIT = 12          # Absolute max turns before forced completion
+MAX_TURNS_HARD_LIMIT = 18          # Absolute max turns before forced completion
 MIN_SYMPTOMS_FOR_SUFFICIENT = 3    # Need at least this many symptoms
 MIN_FACTS_FOR_SUFFICIENT = 4       # Need at least this many total facts
 STALE_THRESHOLD = 2                # Turns with no new facts = stale
