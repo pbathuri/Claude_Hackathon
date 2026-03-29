@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { Case, Doctor } from "@/types";
-import { getCases, getDoctors, timeAgo, subscribeCasesStream } from "@/lib/api";
+import { loadPatientCases, getDoctors, timeAgo, subscribeCasesStream, getApiBase } from "@/lib/api";
 import { mergeCasesWithOverlays, subscribeOverlays, type CaseWithOverlay } from "@/lib/case-overlays";
 import StatsCard from "@/components/StatsCard";
 import PieChart from "@/components/PieChart";
@@ -15,7 +15,7 @@ import { FileText, AlertTriangle, CalendarClock, Gauge, Clock } from "lucide-rea
 import { getCurrentProfile } from "@/lib/auth-storage";
 import DoctorsOnlinePanel, { DoctorsOnlineFloating } from "@/components/DoctorsOnlinePanel";
 
-const POLL_FALLBACK_MS = 60_000;
+const POLL_FALLBACK_MS = 15_000;
 
 function getGreeting(): string {
   const h = new Date().getHours();
@@ -28,13 +28,18 @@ export default function DashboardPage() {
   const [cases, setCases] = useState<Case[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [loading, setLoading] = useState(true);
+  const [casesError, setCasesError] = useState<string | null>(null);
   const [overlayTick, setOverlayTick] = useState(0);
 
   const merged = useMemo(() => mergeCasesWithOverlays(cases), [cases, overlayTick]);
 
   const fetchData = useCallback(async () => {
-    const [casesData, doctorsData] = await Promise.all([getCases(), getDoctors()]);
-    setCases(casesData);
+    const [{ cases: casesData, error: casesErr }, doctorsData] = await Promise.all([
+      loadPatientCases(),
+      getDoctors(),
+    ]);
+    setCasesError(casesErr);
+    if (!casesErr) setCases(casesData);
     setDoctors(doctorsData);
     setLoading(false);
   }, []);
@@ -73,7 +78,11 @@ export default function DashboardPage() {
   }, {});
 
   const recentCases: CaseWithOverlay[] = [...merged]
-    .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime())
+    .sort((a, b) => {
+      const ta = a.submittedAt ? new Date(a.submittedAt).getTime() : 0;
+      const tb = b.submittedAt ? new Date(b.submittedAt).getTime() : 0;
+      return tb - ta;
+    })
     .slice(0, 5);
 
   const profile = getCurrentProfile();
@@ -82,6 +91,27 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <DoctorsOnlineFloating doctors={doctorsForPanel} />
+
+      {casesError && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <p className="font-semibold">Case list could not sync</p>
+          <p className="mt-1 text-amber-900/90">{casesError}</p>
+          <p className="mt-2 text-xs text-amber-800/85">
+            Set <code className="bg-amber-100 px-1 rounded">NEXT_PUBLIC_API_URL</code> on Vercel to your API (e.g. Render URL). Current base:{" "}
+            <code className="bg-amber-100 px-1 rounded">{getApiBase()}</code>
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true);
+              fetchData();
+            }}
+            className="mt-3 text-xs font-semibold text-amber-950 underline hover:no-underline"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       <div className="xl:grid xl:grid-cols-[1fr_288px] xl:gap-6 xl:items-start">
         <div className="space-y-6 min-w-0">

@@ -64,27 +64,83 @@ async function fetchStrict<T>(url: string, options?: RequestInit): Promise<T> {
 
 // --- Cases (real data only) ---
 
+/** Resolved API base (NEXT_PUBLIC_API_URL or localhost). */
+export function getApiBase(): string {
+  return API_BASE;
+}
+
+export type PatientCasesResult = { cases: Case[]; error: string | null };
+
+/**
+ * Load the doctor-portal case list from GET /cases/patient-cases.
+ * Does not silently fall back to [] on failure — check `error` for CORS/network/auth issues.
+ */
+export async function loadPatientCases(): Promise<PatientCasesResult> {
+  try {
+    const data = await fetchStrict<Case[]>(`${API_BASE}/cases/patient-cases`);
+    _isUsingMockData = false;
+    const cases = Array.isArray(data) ? data : [];
+    return { cases, error: null };
+  } catch (e) {
+    _isUsingMockData = true;
+    const msg = e instanceof Error ? e.message : "Failed to load cases from the API.";
+    return { cases: [], error: msg };
+  }
+}
+
+/** Same data as loadPatientCases; returns [] on error (legacy callers). Prefer loadPatientCases for UI errors. */
 export async function getCases(): Promise<Case[]> {
-  return fetchWithFallback(`${API_BASE}/cases/patient-cases`, []);
+  const { cases } = await loadPatientCases();
+  return cases;
+}
+
+export type PatientCaseResult = { case: Case | null; error: string | null };
+
+export async function loadPatientCase(id: string): Promise<PatientCaseResult> {
+  try {
+    const data = await fetchStrict<Case>(`${API_BASE}/cases/patient-cases/${id}`);
+    _isUsingMockData = false;
+    return { case: data, error: null };
+  } catch (e) {
+    _isUsingMockData = true;
+    const msg = e instanceof Error ? e.message : "Failed to load case.";
+    return { case: null, error: msg };
+  }
 }
 
 export async function getCase(id: string): Promise<Case | null> {
-  return fetchWithFallback(`${API_BASE}/cases/patient-cases/${id}`, null);
+  const { case: c } = await loadPatientCase(id);
+  return c;
 }
 
-export async function getCaseQueue(): Promise<Case[]> {
+/**
+ * Internal queue snapshot (scores, not full portal Case rows). Use for diagnostics or future queue UI — not a drop-in for loadPatientCases.
+ */
+export async function getCaseQueue(): Promise<unknown[]> {
   return fetchWithFallback(`${API_BASE}/cases/queue`, []);
 }
 
-/** SSE: backend pushes counts; caller should refetch lists. */
+/**
+ * SSE: backend emits counts every ~4s. Refetch lists when messages arrive or when the connection opens.
+ * If the stream is blocked (CORS/proxy), onerror schedules an extra refetch — combine with polling in pages.
+ */
 export function subscribeCasesStream(onEvent: () => void): () => void {
   if (typeof window === "undefined") return () => {};
+  let debounce: ReturnType<typeof setTimeout> | null = null;
   const es = new EventSource(`${API_BASE}/cases/stream`);
-  es.onmessage = () => onEvent();
-  es.onerror = () => {
-    /* browser will retry; keep quiet */
+  const nudge = () => {
+    onEvent();
   };
-  return () => es.close();
+  es.onopen = () => nudge();
+  es.onmessage = () => nudge();
+  es.onerror = () => {
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(() => nudge(), 1500);
+  };
+  return () => {
+    if (debounce) clearTimeout(debounce);
+    es.close();
+  };
 }
 
 // --- Doctors ---

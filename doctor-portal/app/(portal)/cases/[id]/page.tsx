@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Case } from "@/types";
-import { getCase, assignDoctor, formatDate, timeAgo } from "@/lib/api";
+import { loadPatientCase, assignDoctor, formatDate, timeAgo, getApiBase } from "@/lib/api";
 import {
   getCaseOverlay,
   setCaseOverlay,
@@ -44,6 +44,7 @@ export default function CaseDetailPage() {
 
   const [caseData, setCaseData] = useState<Case | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [assigning, setAssigning] = useState(false);
   const [assigned, setAssigned] = useState(false);
   const [assignError, setAssignError] = useState<string | null>(null);
@@ -67,15 +68,18 @@ export default function CaseDetailPage() {
     }
     let cancelled = false;
     setLoading(true);
-    getCase(caseId)
-      .then((data) => {
+    setLoadError(null);
+    loadPatientCase(caseId)
+      .then(({ case: data, error }) => {
         if (cancelled) return;
+        if (error) {
+          setLoadError(error);
+          setCaseData(null);
+          return;
+        }
         setCaseData(data);
         if (data?.status === "assigned" || data?.status === "responded" || data?.status === "in_review" || data?.status === "closed")
           setAssigned(true);
-      })
-      .catch(() => {
-        if (!cancelled) setCaseData(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -118,9 +122,19 @@ export default function CaseDetailPage() {
 
   if (!caseData) {
     return (
-      <div className="text-center py-20">
-        <p className="text-lg font-heading font-semibold text-gray-500">Case not found</p>
-        <Link href="/cases" className="text-sm text-who-blue hover:underline mt-2 inline-block">
+      <div className="text-center py-20 space-y-4 max-w-lg mx-auto px-4">
+        {loadError ? (
+          <>
+            <p className="text-lg font-heading font-semibold text-triage-red">Could not load this case</p>
+            <p className="text-sm text-gray-600">{loadError}</p>
+            <p className="text-xs text-gray-500">
+              API base: <code className="bg-gray-100 px-1 rounded">{getApiBase()}</code>
+            </p>
+          </>
+        ) : (
+          <p className="text-lg font-heading font-semibold text-gray-500">Case not found</p>
+        )}
+        <Link href="/cases" className="text-sm text-who-blue hover:underline inline-block">
           &larr; Back to cases
         </Link>
       </div>

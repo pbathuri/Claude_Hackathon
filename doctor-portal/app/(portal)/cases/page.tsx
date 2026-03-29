@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import { Case } from "@/types";
-import { getCases, timeAgo, subscribeCasesStream } from "@/lib/api";
+import { loadPatientCases, timeAgo, subscribeCasesStream, getApiBase } from "@/lib/api";
 import { mergeCasesWithOverlays, subscribeOverlays, type CaseWithOverlay } from "@/lib/case-overlays";
 import ClinicalUrgencyBadge from "@/components/ClinicalUrgencyBadge";
 import CountryIndicator from "@/components/CountryIndicator";
@@ -12,7 +12,7 @@ import RedFlagBadge from "@/components/RedFlagBadge";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { Search, SlidersHorizontal, ArrowUpDown, ChevronRight, Bell } from "lucide-react";
 
-const POLL_FALLBACK_MS = 60_000;
+const POLL_FALLBACK_MS = 15_000;
 
 type SortKey = "priority" | "submitted" | "pain";
 type SortDir = "asc" | "desc";
@@ -55,13 +55,19 @@ export default function CasesPage() {
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [secondsAgo, setSecondsAgo] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [overlayTick, setOverlayTick] = useState(0);
   const prevCountRef = useRef<number | null>(null);
 
   const merged = useMemo(() => mergeCasesWithOverlays(cases), [cases, overlayTick]);
 
   const fetchCases = useCallback(async () => {
-    const data = await getCases();
+    const { cases: data, error } = await loadPatientCases();
+    setFetchError(error);
+    if (error) {
+      setLoading(false);
+      return;
+    }
     if (prevCountRef.current !== null && data.length > prevCountRef.current) {
       playNotificationSound();
       setToast(`${data.length - prevCountRef.current} new case(s) received`);
@@ -123,9 +129,12 @@ export default function CasesPage() {
         case "priority":
           diff = a.priorityScore - b.priorityScore;
           break;
-        case "submitted":
-          diff = new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime();
+        case "submitted": {
+          const ta = a.submittedAt ? new Date(a.submittedAt).getTime() : 0;
+          const tb = b.submittedAt ? new Date(b.submittedAt).getTime() : 0;
+          diff = ta - tb;
           break;
+        }
         case "pain":
           diff = a.painScore - b.painScore;
           break;
@@ -149,6 +158,27 @@ export default function CasesPage() {
 
   return (
     <div className="space-y-6">
+      {fetchError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+          <p className="font-semibold">Could not sync with the API</p>
+          <p className="mt-1 text-red-800/90">{fetchError}</p>
+          <p className="mt-2 text-xs text-red-700/80">
+            Check <code className="bg-red-100 px-1 rounded">NEXT_PUBLIC_API_URL</code> on Vercel (must match your Render API, e.g.{" "}
+            <code className="bg-red-100 px-1 rounded">https://your-api.onrender.com</code>) and CORS. API base:{" "}
+            <code className="bg-red-100 px-1 rounded">{getApiBase()}</code>
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true);
+              fetchCases();
+            }}
+            className="mt-3 text-xs font-semibold text-red-900 underline hover:no-underline"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {toast && (
         <div className="fixed top-4 right-4 z-50 animate-in slide-in-from-top-2 flex items-center gap-2 bg-who-blue text-white text-sm font-semibold px-4 py-2.5 rounded-lg shadow-lg">
           <Bell className="w-4 h-4" />
@@ -252,7 +282,15 @@ export default function CasesPage() {
       {filtered.length === 0 ? (
         <div className="text-center py-16 text-gray-400">
           <p className="text-lg font-heading font-semibold">No cases found</p>
-          <p className="text-sm mt-1">Try adjusting your filters</p>
+          <p className="text-sm mt-1">
+            {fetchError && cases.length > 0
+              ? "Nothing matches your current filters. Clear filters or use Retry above if sync failed."
+              : cases.length === 0
+                ? fetchError
+                  ? "Could not load cases from the API."
+                  : "No cases in the database yet, or filters hide everything."
+                : "Try adjusting your filters"}
+          </p>
         </div>
       ) : (
         <div className="space-y-3">
