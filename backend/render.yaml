@@ -18,12 +18,14 @@ services:
         value: eleven_flash_v2_5
       - key: TWILIO_ACCOUNT_SID
         sync: false
-      - key: TWILIO_API_KEY_SID
+      - key: TWILIO_AUTH_TOKEN
         sync: false
       - key: TWILIO_API_KEY_SECRET
         sync: false
       - key: TWILIO_PHONE_NUMBER
-        value: "+14788125405"
+        value: "+18449822145"
+      - key: REDIS_URL
+        sync: false
       - key: SKIP_PIPELINE_ENRICHMENT
         value: "1"
       - key: DEMO_MODE
