@@ -509,6 +509,24 @@ def get_case_for_frontend(db: Session, case_id: str) -> dict | None:
     submitted = case.intake_completed_at or case.opened_at
     kg = _kg_stored_to_portal(intake)
 
+    # ── Phase 04: Clinician explainability ──────────────────────────────
+    from services.explainability import build_case_explainability
+    explainability = build_case_explainability(
+        case_data={
+            "detected_language": getattr(case, "detected_language", None) or "en",
+            "triage_level": case.triage_level or "GREEN",
+            "is_emergency": any(
+                kw in (intake.get("patient_summary", "")).lower()
+                for kw in ["emergency", "chest pain", "can't breathe"]
+            ),
+        },
+        intake_data=intake,
+        conversation_log=getattr(case, "conversation_log", None) or {},
+        triage_breakdown=getattr(case, "triage_breakdown", None),
+    )
+
+    detected_lang = getattr(case, "detected_language", None) or "en"
+
     return {
         "caseId": case.id,
         "patientAlias": case.patient_alias or f"PT-{case.id[:4].upper()}",
@@ -527,6 +545,13 @@ def get_case_for_frontend(db: Session, case_id: str) -> dict | None:
         "priorityScore": case.priority_score or 0,
         "status": _frontend_case_status(case.status),
         "kgInsights": kg,
+        # Phase 01: Language metadata
+        "detectedLanguage": detected_lang,
+        "translationUsed": detected_lang != "en",
+        # Phase 01: Triage explainability
+        "triageBreakdown": getattr(case, "triage_breakdown", None),
+        # Phase 04: Full explainability package
+        "explainability": explainability,
     }
 
 

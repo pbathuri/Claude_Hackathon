@@ -157,7 +157,7 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)):
         f'  <Say voice="{voice}">Welcome to the WHO Health Access Service. {safe_disc}</Say>\n'
         '  <Pause length="1"/>\n'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
-        f' speechTimeout="auto" language="{gather_lang}">\n'
+        f' speechTimeout="3" timeout="10" language="{gather_lang}">\n'
         f'    <Say voice="{voice}">Please describe your main symptoms.'
         " What brings you to call today?</Say>\n"
         "  </Gather>\n"
@@ -391,10 +391,10 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
     return _twiml(
         f'  <Say voice="{voice}">{safe_resp}</Say>\n'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
-        f' speechTimeout="auto" language="{gather_lang}">\n'
+        f' speechTimeout="3" timeout="10" language="{gather_lang}">\n'
         f'    <Say voice="{voice}">{safe_listen}</Say>\n'
         "  </Gather>\n"
-        f'  <Say voice="{voice}">{safe_noinput}</Say>'
+        f'  <Redirect method="POST">/twilio/gather</Redirect>'
     )
 
 
