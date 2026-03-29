@@ -118,15 +118,81 @@ SUPPORTED_LANGUAGES = {
         "greeting": "Kamusta! Maligayang pagdating sa WHO Health Access Service.",
         "emergency_notice": "Mangyaring tumawag sa mga serbisyong pang-emergency kaagad.",
     },
+    "ko": {
+        "name": "Korean",
+        "whisper": "ko",
+        "twilio_voice": "Polly.Seoyeon",
+        "twilio_lang": "ko-KR",
+        "greeting": "안녕하세요! 세계보건기구 건강 접근 서비스입니다.",
+        "emergency_notice": "즉시 응급 서비스로 전화하세요.",
+    },
+    "ig": {
+        "name": "Igbo",
+        "whisper": "ig",
+        "twilio_voice": "Polly.Joanna",
+        "twilio_lang": "en-US",
+        "greeting": "Nnọọ! Ọ bụla na ọrụ ahụike WHO.",
+        "emergency_notice": "Biko kpọọ ọrụ mberede ozugbo.",
+    },
+    "zu": {
+        "name": "Zulu",
+        "whisper": "zu",
+        "twilio_voice": "Polly.Joanna",
+        "twilio_lang": "en-US",
+        "greeting": "Sawubona! Wamukelekile kuSevisi Yezempilo ye-WHO.",
+        "emergency_notice": "Sicela ushayele izinsiza zesimo esiphuthumayo ngokushesha.",
+    },
+    "am": {
+        "name": "Amharic",
+        "whisper": "am",
+        "twilio_voice": "Polly.Joanna",
+        "twilio_lang": "en-US",
+        "greeting": "ሰላም፣ ወደ የአለም ጤና ድርጅት የጤና አገልግሎት እንኳን በደህና መጡ።",
+        "emergency_notice": "እባክዎ ወዲያውኑ የአስቸኳይ ጊዜ አገልግሎት ይደውሉ።",
+    },
+    "so": {
+        "name": "Somali",
+        "whisper": "so",
+        "twilio_voice": "Polly.Joanna",
+        "twilio_lang": "en-US",
+        "greeting": "Salaan! Ku soo dhawoow adeegga caafimaadka ee WHO.",
+        "emergency_notice": "Fadlan isla markiiba wac adeegga degdegga ah.",
+    },
+    "af": {
+        "name": "Afrikaans",
+        "whisper": "af",
+        "twilio_voice": "Polly.Joanna",
+        "twilio_lang": "en-US",
+        "greeting": "Hallo! Welkom by die WHO Gesondheidstoegangdiens.",
+        "emergency_notice": "Bel asseblief dadelik nooddienste.",
+    },
+    "lg": {
+        "name": "Luganda",
+        "whisper": "lg",
+        "twilio_voice": "Polly.Joanna",
+        "twilio_lang": "en-US",
+        "greeting": "Oli otya! Tukwanirizza ku Sserevisi y'obulamu ya WHO.",
+        "emergency_notice": "Nsaba okuba essimu eri embeera ez'akavuvulu amangu ddala.",
+    },
+    "rw": {
+        "name": "Kinyarwanda",
+        "whisper": "rw",
+        "twilio_voice": "Polly.Joanna",
+        "twilio_lang": "en-US",
+        "greeting": "Muraho! Murakaza neza ku serivisi y'ubuzima ya WHO.",
+        "emergency_notice": "Hamagara abafasha mu bihe byihutirwa ako kanya.",
+    },
 }
 
 # Quick character-set heuristics for common scripts (avoids API call)
 _SCRIPT_PATTERNS = [
+    (re.compile(r"[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]"), "ko"),  # Hangul / Jamo
+    (re.compile(r"[\u1200-\u137F]"), "am"),       # Ethiopic → Amharic
     (re.compile(r"[\u0900-\u097F]"), "hi"),       # Devanagari → Hindi
     (re.compile(r"[\u0600-\u06FF]"), "ar"),        # Arabic script
     (re.compile(r"[\u4E00-\u9FFF]"), "zh"),        # CJK → Chinese
-    (re.compile(r"[àâçéèêëîïôùûüÿæœ]", re.I), "fr"),  # French diacritics
-    (re.compile(r"[áéíóúñ¿¡]", re.I), "es"),       # Spanish
+    (re.compile(r"[áéíóúñ¿¡]", re.I), "es"),       # Spanish (before French — shared é/í)
+    (re.compile(r"[àâçéèêëîïôùûüÿæœ]", re.I), "fr"),
     (re.compile(r"[ãõçâê]", re.I), "pt"),           # Portuguese
     (re.compile(r"[äöüß]", re.I), "de"),            # German
     (re.compile(r"[Ẹẹọ́ọ̀Ṣṣ]"), "yo"),              # Yoruba
@@ -135,14 +201,121 @@ _SCRIPT_PATTERNS = [
 # Common non-English phrases for fast detection
 _PHRASE_HINTS = {
     "hola": "es", "buenos días": "es", "tengo": "es", "dolor": "es", "fiebre": "es",
+    "me duele": "es", "estoy enfermo": "es", "náuseas": "es", "pecho": "es",
     "bonjour": "fr", "j'ai": "fr", "mal à": "fr", "fièvre": "fr", "douleur": "fr",
+    "j'ai mal": "fr", "tête": "fr",
     "namaste": "hi", "mujhe": "hi", "dard": "hi", "bukhar": "hi",
     "olá": "pt", "tenho": "pt", "dor": "pt", "febre": "pt",
     "مرحبا": "ar", "ألم": "ar", "حمى": "ar",
     "你好": "zh", "疼": "zh", "发烧": "zh", "头疼": "zh",
-    "habari": "sw", "maumivu": "sw", "homa": "sw",
+    "habari": "sw", "maumivu": "sw", "homa": "sw", "nina": "sw",
     "sannu": "ha", "ciwon": "ha", "zazzabi": "ha",
+    "안녕": "ko", "아파요": "ko", "머리": "ko", "열이": "ko", "어디가": "ko",
+    "nnọọ": "ig", "ọrịa": "ig", "isi ọrịa": "ig", "m na": "ig",
+    "sawubona": "zu", "ngiyaphila": "zu", "ubuhlungu": "zu",
+    "ሰላም": "am", "እኔ": "am", "ራስ": "am",
+    "salaan": "so", "xanuun": "so", "madax": "so",
+    "welkom": "af", "seer": "af", "pyn": "af", "koors": "af",
+    "willkommen": "de", "kopfschmerz": "de",
+    "oli otya": "lg", "mulwadde": "lg",
+    "muraho": "rw", "ndwaye": "rw",
 }
+
+# Token → language(s); one token may only map to one language (no overwrites).
+_TOKEN_TO_LANG: dict[str, str] = {}
+for _lang, _words in (
+    ("es", (
+        "dolor", "cabeza", "fiebre", "estoy", "tengo", "malestar", "náuseas",
+        "vomito", "pecho", "tos", "días", "semana", "horas", "estómago",
+        "garganta", "mareos", "cansancio", "ayer", "náusea",
+    )),
+    ("fr", (
+        "douleur", "fièvre", "tête", "médecin", "jours", "semaine", "ventre",
+        "nausée", "depuis", "hier", "malade", "fatigue",
+    )),
+    ("pt", (
+        "febre", "estou", "tenho", "barriga", "tosse", "dias", "ontem",
+    )),
+    ("de", (
+        "kopfschmerzen", "fieber", "schmerzen", "übelkeit", "seit", "tage", "arzt",
+    )),
+    ("zu", (
+        "ubuhlungu", "ikhanda", "isifo", "ngiyafa", "kube", "kubuhlungu",
+    )),
+    ("ig", (
+        "ọrịa", "ahụ", "ụbụ", "mmụọ",
+    )),
+    ("so", (
+        "xanuun", "caloosha", "madax", "xanuunaa", "qabaa", "waan",
+    )),
+    ("af", (
+        "pyn", "koors", "dokter", "lyf", "seer", "naar",
+    )),
+):
+    for _w in _words:
+        _TOKEN_TO_LANG[_w] = _lang
+
+
+def normalize_lang_code(code: str | None) -> str:
+    """BCP-47 / UI values → ISO 639-1 for session + translation."""
+    if not code or not str(code).strip():
+        return "en"
+    base = str(code).strip().split("-")[0].lower()
+    return base if base.isalpha() and len(base) >= 2 else "en"
+
+
+def _score_latin_word_language(text_lower: str) -> str | None:
+    """Disambiguate Latin-script messages (e.g. Spanish vs English) via word counts."""
+    tokens = re.findall(
+        r"[a-zàâçéèêëîïôùûüÿæœáíóúñãõäöüßẹọṣịọụńḍ]+",
+        text_lower,
+    )
+    counts: dict[str, int] = {}
+    for raw in tokens:
+        t = raw.lower()
+        if len(t) < 3:
+            continue
+        lang = _TOKEN_TO_LANG.get(t)
+        if lang:
+            counts[lang] = counts.get(lang, 0) + 1
+    if not counts:
+        return None
+    best_lang, best_n = max(counts.items(), key=lambda x: x[1])
+    if best_n >= 2:
+        return best_lang
+    if best_n == 1 and len(tokens) <= 6:
+        return best_lang
+    return None
+
+
+def _detect_language_claude(text: str) -> str | None:
+    """Optional Haiku classifier when heuristics return English (set USE_CLAUDE_LANG_DETECT=1)."""
+    if os.environ.get("USE_CLAUDE_LANG_DETECT", "").lower() not in ("1", "true", "yes"):
+        return None
+    snippet = text.strip()[:800]
+    if len(snippet) < 18:
+        return None
+    try:
+        client = _get_client()
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20241022",
+            max_tokens=12,
+            system=(
+                "Identify the primary language of the user's message. "
+                "Reply with ONLY a two-letter ISO 639-1 code "
+                "(en, es, fr, ko, sw, hi, ar, zh, pt, de, yo, ha, ig, zu, am, so, af, lg, rw, tl). "
+                "No punctuation or explanation."
+            ),
+            messages=[{"role": "user", "content": snippet}],
+        )
+        raw = resp.content[0].text.strip().lower()
+        code = re.sub(r"[^a-z]", "", raw)[:2]
+        if len(code) == 2 and code.isalpha():
+            logger.info("[Lang] Claude-detected: %s", code)
+            return code
+    except Exception as exc:
+        logger.debug("[Lang] Claude language detect skipped: %s", exc)
+    return None
 
 
 def detect_language(text: str) -> str:
@@ -150,9 +323,11 @@ def detect_language(text: str) -> str:
     Detect language from user text.
 
     Strategy (fast → slow):
-    1. Script-based heuristic (instant — catches Arabic, Hindi, Chinese, etc.)
-    2. Phrase-hint lookup (instant — catches common non-English medical terms)
-    3. Defaults to "en" (the Claude translation step will catch misdetections)
+    1. Script-based heuristic (Hangul, Ethiopic, Arabic, CJK, …)
+    2. Phrase-hint lookup (medical small-talk in many languages)
+    3. Latin-script word scoring (Spanish, French, Portuguese, …)
+    4. Optional Claude Haiku (USE_CLAUDE_LANG_DETECT=1) for ambiguous Latin text
+    5. Default English
 
     Returns ISO 639-1 code.
     """
@@ -161,20 +336,26 @@ def detect_language(text: str) -> str:
 
     text_stripped = text.strip()
 
-    # 1. Script detection (catches non-Latin scripts instantly)
     for pattern, lang in _SCRIPT_PATTERNS:
         if pattern.search(text_stripped):
             logger.info("[Lang] Script-detected: %s", lang)
             return lang
 
-    # 2. Phrase hint lookup
     text_lower = text_stripped.lower()
     for phrase, lang in _PHRASE_HINTS.items():
         if phrase in text_lower:
             logger.info("[Lang] Phrase-detected '%s' → %s", phrase, lang)
             return lang
 
-    # 3. Default to English
+    latin_guess = _score_latin_word_language(text_lower)
+    if latin_guess:
+        logger.info("[Lang] Word-score → %s", latin_guess)
+        return latin_guess
+
+    claude_guess = _detect_language_claude(text_stripped)
+    if claude_guess and claude_guess != "en":
+        return claude_guess
+
     return "en"
 
 
@@ -206,7 +387,8 @@ def translate_to_english(text: str, source_lang: str) -> str:
     if source_lang == "en" or not text.strip():
         return text
 
-    lang_name = SUPPORTED_LANGUAGES.get(source_lang, {}).get("name", source_lang)
+    cfg = SUPPORTED_LANGUAGES.get(source_lang)
+    lang_name = cfg["name"] if cfg else f"ISO 639-1 language '{source_lang}'"
 
     try:
         client = _get_client()
@@ -237,7 +419,8 @@ def translate_from_english(text: str, target_lang: str) -> str:
     if target_lang == "en" or not text.strip():
         return text
 
-    lang_name = SUPPORTED_LANGUAGES.get(target_lang, {}).get("name", target_lang)
+    cfg = SUPPORTED_LANGUAGES.get(target_lang)
+    lang_name = cfg["name"] if cfg else f"ISO 639-1 language '{target_lang}'"
 
     try:
         client = _get_client()
@@ -269,7 +452,8 @@ def translate_disclosure(disclosure_script: str, target_lang: str) -> str:
     if target_lang == "en" or not disclosure_script.strip():
         return disclosure_script
 
-    lang_name = SUPPORTED_LANGUAGES.get(target_lang, {}).get("name", target_lang)
+    cfg = SUPPORTED_LANGUAGES.get(target_lang)
+    lang_name = cfg["name"] if cfg else f"ISO 639-1 language '{target_lang}'"
 
     try:
         client = _get_client()

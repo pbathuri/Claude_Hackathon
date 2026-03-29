@@ -61,6 +61,7 @@ from services.language_service import (
     build_emergency_message,
     get_emergency_number,
     SUPPORTED_LANGUAGES,
+    normalize_lang_code,
 )
 from config import (
     is_knowledge_graph_enabled, OPENAI_API_KEY,
@@ -183,8 +184,10 @@ async def start_session(req: SessionStartRequest, db: Session = Depends(get_db))
             },
         )
 
+    lang = normalize_lang_code(req.language)
+
     # Create patient + case
-    patient = get_or_create_patient(db, phone_info["e164"], country_code, req.language)
+    patient = get_or_create_patient(db, phone_info["e164"], country_code, lang)
     case = create_case(
         db,
         patient_id=patient.id,
@@ -197,9 +200,9 @@ async def start_session(req: SessionStartRequest, db: Session = Depends(get_db))
     verbal_disclosure = _build_verbal_disclosure(country_perm)
 
     # Track session language and translate disclosure if needed
-    session_store.case_language_set(case.id, req.language)
-    if req.language != "en":
-        verbal_disclosure = translate_disclosure(verbal_disclosure, req.language)
+    session_store.case_language_set(case.id, lang)
+    if lang != "en":
+        verbal_disclosure = translate_disclosure(verbal_disclosure, lang)
 
     return SessionStartResponse(
         session_id=case.id,
@@ -739,6 +742,9 @@ class AITurnResponse(BaseModel):
     duration_extracted: str | None = None
     body_area_extracted: str | None = None
     transcript_summary: str | None = None
+    # Active UI/session language for TTS & follow-up turns; switches when input is detected as another language
+    conversation_language: str = "en"
+    language_changed: bool = False
 
 
 def _extract_symptoms_from_text(text: str, graph) -> list[str]:
@@ -1017,14 +1023,18 @@ async def ai_conversation_turn(req: AITurnRequest, db: Session = Depends(get_db)
     case_row = db.query(Case).filter_by(id=req.case_id).first()
     case_country = (case_row.country_code or "") if case_row else ""
 
-    # ── 0. Language detection and translation ──
-    user_lang = req.language
+    # ── 0. Language: detect from user text → override UI; else UI preference; else English ──
+    req_lang = normalize_lang_code(req.language)
+    prev_lang = session_store.case_language_get(req.case_id)
     detected = detect_language(req.user_message)
     if detected != "en":
         user_lang = detected
         kg_logger.info("[AI Turn] Detected language: %s for case %s", user_lang, req.case_id)
-    elif user_lang in ("auto", ""):
+    elif req_lang not in ("en", "auto", ""):
+        user_lang = req_lang
+    else:
         user_lang = "en"
+    language_changed = bool(prev_lang and prev_lang != user_lang)
     session_store.case_language_set(req.case_id, user_lang)
 
     # Translate to English for all clinical processing
@@ -1143,14 +1153,21 @@ async def ai_conversation_turn(req: AITurnRequest, db: Session = Depends(get_db)
 
     body_area_extracted = body_systems[0] if body_systems else None
 
-    # ── 8. Build message history in ENGLISH for Claude ──
+    # ── 8. Build message history in ENGLISH for Claude (UI may store any language per turn) ──
     claude_history = []
-    for msg in req.message_history:
-        if msg.get("role") not in ("user", "assistant"):
+    for msg in req.message_history[-16:]:
+        role = msg.get("role")
+        if role == "ai":
+            role = "assistant"
+        if role not in ("user", "assistant"):
             continue
         body = (msg.get("content") or msg.get("text") or "").strip()
-        if body:
-            claude_history.append({"role": msg["role"], "content": body})
+        if not body:
+            continue
+        hist_lang = detect_language(body)
+        if hist_lang != "en":
+            body = translate_to_english(body, hist_lang)
+        claude_history.append({"role": msg["role"], "content": body})
 
     # ── 9. Generate AI response via Claude (in English) ──
     previous_msgs = session_store.case_ai_history_get(req.case_id)
@@ -1227,6 +1244,8 @@ async def ai_conversation_turn(req: AITurnRequest, db: Session = Depends(get_db)
         duration_extracted=duration_extracted,
         body_area_extracted=body_area_extracted,
         transcript_summary=transcript_summary,
+        conversation_language=user_lang,
+        language_changed=language_changed,
     )
 
 

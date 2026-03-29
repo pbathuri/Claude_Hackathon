@@ -141,12 +141,21 @@ body{display:flex;flex-direction:column}
 <div class="dialer" id="dialerScreen">
   <div class="dialer-title">WHO Health Access</div>
   <div class="dialer-sub">AI-powered multilingual telehealth. Describe your symptoms in any language — your case will be triaged and routed to a qualified physician in real time.</div>
+  <div class="phone-row" style="max-width:380px;margin-bottom:8px">
+    <select class="country-select" id="dialerLang" title="Preferred language" style="width:100%;font-size:14px">
+      <option value="">Loading…</option>
+    </select>
+  </div>
   <div class="phone-row">
     <select class="country-select" id="countrySelect">
       <option value="+91">🇮🇳 India +91</option>
       <option value="+63">🇵🇭 Philippines +63</option>
       <option value="+254">🇰🇪 Kenya +254</option>
       <option value="+234">🇳🇬 Nigeria +234</option>
+      <option value="+27">🇿🇦 South Africa +27</option>
+      <option value="+251">🇪🇹 Ethiopia +251</option>
+      <option value="+252">🇸🇴 Somalia +252</option>
+      <option value="+82">🇰🇷 Korea +82</option>
       <option value="+1">🇺🇸 US +1</option>
       <option value="+44">🇬🇧 UK +44</option>
       <option value="+49">🇩🇪 Germany +49</option>
@@ -182,17 +191,25 @@ body{display:flex;flex-direction:column}
   <div class="input-bar" id="inputBar" style="flex-wrap:wrap">
     <select class="country-select" id="speechLang" title="Language" style="width:auto;min-width:120px;font-size:13px" onchange="onLanguageChange(this.value)">
       <option value="en-US">🌐 English</option>
+      <option value="es-ES">Español (Spanish)</option>
+      <option value="ko-KR">한국어 Korean</option>
       <option value="hi-IN">हिन्दी Hindi</option>
-      <option value="tl-PH">Filipino</option>
       <option value="sw-KE">Kiswahili</option>
-      <option value="es-ES">Español</option>
+      <option value="zu-ZA">isiZulu</option>
+      <option value="af-ZA">Afrikaans</option>
+      <option value="am-ET">አማርኛ Amharic</option>
+      <option value="so-SO">Soomaali</option>
+      <option value="ig-NG">Igbo</option>
+      <option value="yo-NG">Yorùbá</option>
+      <option value="ha-NG">Hausa</option>
+      <option value="lg-UG">Luganda</option>
+      <option value="rw-RW">Kinyarwanda</option>
+      <option value="tl-PH">Filipino</option>
       <option value="fr-FR">Français</option>
       <option value="ar-SA">العربية</option>
       <option value="zh-CN">中文</option>
       <option value="pt-BR">Português</option>
       <option value="de-DE">Deutsch</option>
-      <option value="ha-NG">Hausa</option>
-      <option value="yo-NG">Yorùbá</option>
     </select>
     <button class="btn-icon btn-cam" id="btnCam" onclick="openCamera()" title="Upload photo">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
@@ -289,10 +306,12 @@ async function startCall() {
   document.getElementById('statusText').textContent = 'Connecting...';
 
   try {
+    const langEl = document.getElementById('dialerLang') || document.getElementById('speechLang');
+    const langPref = (langEl?.value || 'en-US').split('-')[0] || 'en';
     const res = await fetch(`${API}/caller/session/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone_number: phone }),
+      body: JSON.stringify({ phone_number: phone, language: langPref }),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -331,6 +350,17 @@ async function startCall() {
         zh: '你好！请描述您的症状。',
         de: 'Hallo! Bitte beschreiben Sie Ihre Symptome.',
         sw: 'Habari! Tafadhali eleza dalili zako.',
+        ko: '안녕하세요! 증상을 말씀해 주세요.',
+        zu: 'Sawubona! Sicela uchaze izimpawu zakho zokugula.',
+        af: "Hallo! Beskryf asseblief u simptome.",
+        am: 'ሰላም፣ እባክዎ ምልክቶችዎን ይግለጹ።',
+        so: 'Salaan! Fadlan sheeg calaamadahaaga.',
+        ig: 'Nnọọ! Biko kọwa ọrịa gị.',
+        yo: 'Ẹ kú! Jọ̀wọ́ sọ àwọn àmì ìkọlẹ̀ rẹ.',
+        ha: 'Sannu! Da fatan za a bayyana alamun ku.',
+        lg: "Oli otya! Nsaba oggamba ebintu ebikukalubiriza.",
+        rw: "Muraho! Nyamuneka soma ibimenyetso byawe.",
+        tl: 'Kamusta! Pakilarawan ang inyong mga sintomas.',
       };
       const greeting = greetings[lang] || greetings.en;
       addMessage('ai', greeting);
@@ -391,6 +421,21 @@ async function processAITurn(userMessage) {
     });
     const data = await res.json();
 
+    if (data.language_changed && data.conversation_language) {
+      const iso = String(data.conversation_language).toLowerCase();
+      const sel = document.getElementById('speechLang');
+      if (sel) {
+        const match = [...sel.options].find((o) => o.value.toLowerCase().startsWith(iso + '-'));
+        if (match) {
+          sel.value = match.value;
+          if (recognition) recognition.lang = match.value;
+          const d = document.getElementById('dialerLang');
+          if (d) d.value = match.value;
+        }
+      }
+      addMessage('system', 'Conversation language: ' + iso.toUpperCase() + ' (detected from your message)');
+    }
+
     collectedSymptoms = data.all_symptoms_so_far || collectedSymptoms;
     turnNumber = data.turn_number || turnNumber + 1;
     if (data.severity_extracted) extractedSeverity = data.severity_extracted;
@@ -399,7 +444,7 @@ async function processAITurn(userMessage) {
 
     if (data.is_emergency) {
       const cc = document.getElementById('countrySelect').value;
-      const emergNums = {'+91':'112','+63':'911','+254':'999','+234':'112','+1':'911','+44':'999','+49':'112','+33':'15','+55':'192','+52':'911','+966':'997','+92':'1122'};
+      const emergNums = {'+91':'112','+63':'911','+254':'999','+234':'112','+27':'10177','+251':'911','+252':'999','+82':'119','+1':'911','+44':'999','+49':'112','+33':'15','+55':'192','+52':'911','+966':'997','+92':'1122'};
       const num = emergNums[cc] || '112';
       document.getElementById('emergencyText').innerHTML = `Call <strong>${num}</strong> immediately`;
       document.getElementById('emergencyOverlay').classList.add('active');
@@ -703,22 +748,40 @@ function onLanguageChange(val) {
   if (recognition) {
     recognition.lang = val === 'auto' ? 'en-US' : val;
   }
+  const dial = document.getElementById('dialerLang');
+  if (dial) dial.value = val;
   const langName = document.getElementById('speechLang').selectedOptions[0]?.textContent?.trim() || val;
   if (caseId) addMessage('system', `Language: ${langName}`);
 }
 
 /* ── Auto-select language from country ── */
 document.getElementById('countrySelect').addEventListener('change', function() {
-  const langMap = {'+91':'hi-IN','+63':'tl-PH','+254':'sw-KE','+234':'en-US','+1':'en-US','+44':'en-US','+49':'de-DE','+33':'fr-FR','+55':'pt-BR','+52':'es-ES','+966':'ar-SA','+92':'en-US'};
+  const langMap = {'+91':'hi-IN','+63':'tl-PH','+254':'sw-KE','+234':'ig-NG','+27':'zu-ZA','+251':'am-ET','+252':'so-SO','+82':'ko-KR','+1':'en-US','+44':'en-US','+49':'de-DE','+33':'fr-FR','+55':'pt-BR','+52':'es-ES','+966':'ar-SA','+92':'en-US'};
   const langSel = document.getElementById('speechLang');
+  const dial = document.getElementById('dialerLang');
   const suggested = langMap[this.value];
-  if (suggested && langSel) {
-    langSel.value = suggested;
+  if (suggested) {
+    if (langSel) langSel.value = suggested;
+    if (dial) dial.value = suggested;
   }
 });
 
 /* ── Init voices ── */
 if (synth) synth.onvoiceschanged = () => synth.getVoices();
+
+/* Clone language options to dialer (pick before call); keep in sync with in-call selector */
+(function initDialerLang() {
+  const src = document.getElementById('speechLang');
+  const dial = document.getElementById('dialerLang');
+  if (src && dial) {
+    dial.innerHTML = src.innerHTML;
+    dial.value = src.value;
+    dial.addEventListener('change', () => {
+      src.value = dial.value;
+      if (recognition) recognition.lang = dial.value === 'auto' ? 'en-US' : dial.value;
+    });
+  }
+})();
 </script>
 </body>
 </html>
