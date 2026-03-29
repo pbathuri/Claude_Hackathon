@@ -236,6 +236,22 @@ function beep(freq = 880, dur = 120) {
   } catch (e) {}
 }
 
+function readyTone() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(660, ctx.currentTime);
+    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.3);
+    gain.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1.8);
+    osc.start();
+    osc.stop(ctx.currentTime + 2);
+  } catch (e) {}
+}
+
 /* ── Timer ── */
 function startTimer() {
   callSeconds = 0;
@@ -291,9 +307,10 @@ async function startCall() {
         const banner = document.getElementById('disclosureBanner');
         banner.style.display = '';
         banner.innerHTML = `<strong>Capability Disclosure:</strong> ${sessionData.verbal_disclosure}`;
-        speak(sessionData.verbal_disclosure);
       }
+      readyTone();
       addMessage('ai', 'Hello! I\'m your AI health assistant. Please describe your symptoms — you can speak or type.');
+      speak('Hello! I\'m your AI health assistant. Please describe your symptoms.');
     }, 1500);
   } catch (e) {
     document.getElementById('connectingScreen').classList.remove('active');
