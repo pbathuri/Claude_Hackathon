@@ -1,6 +1,6 @@
 """
 Twilio voice: strict sequential intake (one question per <Gather> callback).
-Timeouts scaled to 80% of typical defaults (see GATHER_* / READY_TONE_*).
+Gather timeouts are 60% of the prior tuned values (see GATHER_* / READY_TONE_*).
 """
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-# 80% of typical Twilio defaults (5s wait → 4s; 2s tone → 1.6s)
-GATHER_TIMEOUT_SEC = 4
-GATHER_SPEECH_TIMEOUT = "4"
-READY_TONE_DURATION_SEC = 1.6
+# 60% of prior values (4s→2s, 4→2, 1.6s→~1s)
+GATHER_TIMEOUT_SEC = 2
+GATHER_SPEECH_TIMEOUT = "2"
+READY_TONE_DURATION_SEC = 1.0
 
 Action = Literal["gather_next", "submit_case", "consent_refused"]
 
@@ -146,13 +146,20 @@ def symptoms_from_chief_text(chief: str) -> list[str]:
     return list(dict.fromkeys(words[:8])) if words else ["unspecified symptom"]
 
 
-def parse_allergy_list(speech: str) -> list[str]:
-    low = (speech or "").lower().strip()
-    if not low:
-        return []
-    if any(x in low for x in ("no allergy", "no known", "nkda", "none", "no allergies")):
-        return []
-    return [s.strip() for s in re.split(r"[,;]", speech) if s.strip()][:20]
+def parse_allergies_speech(speech: str) -> str | None:
+    """
+    Returns canonical string: 'none' for no allergies (zero / none / nkda),
+    else the patient's wording (comma-separated if multiple). None = not understood.
+    """
+    raw = (speech or "").strip()
+    if not raw:
+        return None
+    low = raw.lower()
+    if low in ("0", "zero", "none", "no", "no allergies", "no allergy", "nkda", "no known", "no known allergies"):
+        return "none"
+    if re.fullmatch(r"0+", low):
+        return "none"
+    return raw[:500]
 
 
 def parse_medication_list(speech: str) -> list[str]:
@@ -162,36 +169,6 @@ def parse_medication_list(speech: str) -> list[str]:
     if low in ("none", "no", "no medications", "not taking", "nothing"):
         return []
     return [s.strip() for s in re.split(r"[,;]", speech) if s.strip()][:30]
-
-
-async def claude_parse_dob(speech: str, api_key: str, model: str) -> str:
-    if not api_key or not (speech or "").strip():
-        return ""
-    try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=api_key)
-        r = client.messages.create(
-            model=model,
-            max_tokens=120,
-            system=(
-                'Parse the patient\'s spoken date of birth. Reply with JSON only: '
-                '{"dob":"YYYY-MM-DD"} if you can infer a full date, else {"dob":""}. '
-                "Accept formats like year month day spoken."
-            ),
-            messages=[{"role": "user", "content": speech[:500]}],
-        )
-        raw = (r.content[0].text or "").strip()
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        if start >= 0 and end > start:
-            j = json.loads(raw[start:end])
-            dob = (j.get("dob") or "").strip()
-            if re.match(r"^\d{4}-\d{2}-\d{2}$", dob):
-                return dob
-    except Exception as exc:
-        logger.warning("[Twilio] DOB parse failed: %s", exc)
-    return ""
 
 
 async def advance_twilio_intake_step(
@@ -233,16 +210,15 @@ async def advance_twilio_intake_step(
 
     if phase == "gender":
         session["patient_gender"] = parse_gender(speech)
+        spoken_num = format_e164_for_speech(e164)
         return IntakeStepResult(
-            "Please say your date of birth. Say the 4-digit year first, then the 2-digit month, "
-            "then the 2-digit day. For example: 1990, 03, 15.",
-            "dob",
+            f"We have your phone number on file as {spoken_num}. Is this correct? Please say yes or no.",
+            "phone_confirm",
             "gather_next",
         )
 
+    # Legacy in-flight sessions that still have intake_phase "dob" — skip removed step
     if phase == "dob":
-        dob = await claude_parse_dob(speech, anthropic_api_key, intake_model)
-        session["patient_dob"] = dob or ""
         spoken_num = format_e164_for_speech(e164)
         return IntakeStepResult(
             f"We have your phone number on file as {spoken_num}. Is this correct? Please say yes or no.",
@@ -340,13 +316,22 @@ async def advance_twilio_intake_step(
     if phase == "sq_duration":
         session["twilio_stored_duration"] = extract_duration_from_speech(speech) or (speech or "").strip()[:120]
         return IntakeStepResult(
-            "Do you have any known allergies? Please say them, or say none if you have no allergies.",
+            "Do you have any known allergies? If yes, please say the name of the allergy. "
+            "If you have no allergies, please say zero.",
             "sq_allergies",
             "gather_next",
         )
 
     if phase == "sq_allergies":
-        session["allergies_list"] = parse_allergy_list(speech)
+        al = parse_allergies_speech(speech)
+        if al is None:
+            return IntakeStepResult(
+                "I didn't catch that. Do you have any known allergies? If yes, say the allergy name. "
+                "If you have none, please say zero.",
+                "sq_allergies",
+                "gather_next",
+            )
+        session["allergies_text"] = al
         return IntakeStepResult(
             "What medications are you currently taking? Or say none.",
             "sq_meds",
@@ -397,7 +382,7 @@ async def claude_symptom_summary_and_fill(
     duration_guess: str,
     body_guess: str,
     severity: int,
-    allergies: list[str],
+    allergies: str,
     medications: list[str],
     chief_text: str,
     api_key: str,
@@ -409,10 +394,11 @@ async def claude_symptom_summary_and_fill(
         "body_area": body_guess or "",
     }
     age_s = str(patient_age) if patient_age is not None else ""
+    al_display = (allergies or "none").strip() or "none"
     if not api_key:
         sym = ", ".join(symptoms) if symptoms else "unspecified symptoms"
         out["symptom_summary"] = (
-            f"{chief_text or sym}. Allergies: {', '.join(allergies) or 'none reported'}. "
+            f"{chief_text or sym}. Allergies: {al_display}. "
             f"Meds: {', '.join(medications) or 'none reported'}. "
             f"Duration: {duration_guess or 'unspecified'}. Body: {body_guess or 'unspecified'}. "
             f"Pain {severity}/10. Age {age_s}."
@@ -428,7 +414,7 @@ async def claude_symptom_summary_and_fill(
             f"Severity (0-10): {severity}\n"
             f"Duration: {duration_guess or 'unknown'}\n"
             f"Body area: {body_guess or 'unknown'}\n"
-            f"Allergies: {', '.join(allergies) or 'none'}\n"
+            f"Allergies: {al_display}\n"
             f"Medications: {', '.join(medications) or 'none'}\n"
             f"Age: {age_s} Gender: {patient_gender} DOB: {patient_dob} Phone: {patient_phone}\n"
             f"Delivery: {delivery_preference}\n\n"

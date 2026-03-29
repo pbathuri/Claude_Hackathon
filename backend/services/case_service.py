@@ -53,6 +53,17 @@ def _generate_patient_alias(patient_id: str) -> str:
     return f"PT-{numeric:04d}"
 
 
+def _allergies_to_portal_list(intake: dict) -> list[str]:
+    """Normalize intake allergies (string or legacy list) for the doctor portal."""
+    a = intake.get("allergies")
+    if isinstance(a, list):
+        return [str(x).strip() for x in a if str(x).strip()]
+    s = str(a).strip() if a is not None else ""
+    if not s or s.lower() in ("none", "0"):
+        return []
+    return [p.strip() for p in s.split(",") if p.strip()] if "," in s else [s]
+
+
 def transition_case_status(
     db: Session,
     case_id: str,
@@ -572,7 +583,7 @@ def get_case_for_frontend(db: Session, case_id: str) -> dict | None:
         "painScore": intake.get("severity", 0),
         "symptomDuration": intake.get("duration", ""),
         "bodyArea": case.body_area or intake.get("body_area", ""),
-        "allergies": intake.get("allergies") or [],
+        "allergies": _allergies_to_portal_list(intake),
         "currentMedications": intake.get("current_medications") or [],
         "imageUrls": image_urls,
         "consentGiven": patient.consent_given if patient else False,
@@ -664,7 +675,7 @@ def get_all_cases_for_frontend(db: Session, status: str | None = None,
             "painScore": intake.get("severity", 0),
             "symptomDuration": intake.get("duration", ""),
             "bodyArea": case.body_area or intake.get("body_area", ""),
-            "allergies": intake.get("allergies") or [],
+            "allergies": _allergies_to_portal_list(intake),
             "currentMedications": intake.get("current_medications") or [],
             "imageUrls": image_urls,
             "consentGiven": patient.consent_given if patient else False,

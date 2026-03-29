@@ -97,10 +97,20 @@ export async function getDoctors(): Promise<Doctor[]> {
 // --- Mutations ---
 
 export async function assignDoctor(caseId: string, doctorId: string = "portal-doctor"): Promise<{ success: boolean }> {
-  return fetchStrict(`${API_BASE}/cases/${caseId}/assign`, {
+  const data = await fetchStrict<{
+    success?: boolean;
+    status?: string;
+    case_id?: string;
+    doctor_id?: string;
+  }>(`${API_BASE}/cases/${caseId}/assign`, {
     method: "POST",
     body: JSON.stringify({ doctor_id: doctorId }),
   });
+  const ok = data.success === true || data.status === "assigned";
+  if (!ok) {
+    throw new Error("Assign request did not confirm success");
+  }
+  return { success: true };
 }
 
 export async function submitResponse(

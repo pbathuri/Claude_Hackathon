@@ -21,7 +21,7 @@ class IntakeData(BaseModel):
     associated_symptoms: list[str] = Field(default_factory=list)
     medical_history: list[str] = Field(default_factory=list)
     current_medications: list[str] = Field(default_factory=list)
-    allergies: list[str] = Field(default_factory=list)
+    allergies: str = ""
     triage_level: str = "GREEN"
     recommended_specialty: str = "general"
     body_area: str = ""
@@ -44,6 +44,14 @@ def normalize_intake_dict(raw: dict) -> dict:
         d["severity"] = 5
     if d.get("triage_level") is None:
         d["triage_level"] = "GREEN"
+    al = d.get("allergies")
+    if isinstance(al, list):
+        parts = [str(x).strip() for x in al if str(x).strip()]
+        d["allergies"] = ", ".join(parts) if parts else ""
+    elif al is None:
+        d["allergies"] = ""
+    else:
+        d["allergies"] = str(al).strip()
     return IntakeData.model_validate(d).model_dump(mode="json")
 
 

@@ -1,7 +1,7 @@
 """
 Twilio Voice Webhook router.
 Handles inbound phone calls via Twilio with strict scripted intake:
-name → age → gender → DOB → phone confirm → consent → chief symptom →
+name → age → gender → phone confirm → consent → chief symptom →
 body → pain → duration → allergies → medications → delivery, then submit.
 
 Emergency red-flag detection after consent can short-circuit to submit + advisory hangup.
@@ -178,7 +178,7 @@ async def tts_audio_for_twilio(text: str):
         return Response(status_code=503, content=b"ElevenLabs not configured")
 
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with httpx.AsyncClient(timeout=7.0) as client:
             resp = await client.post(
                 f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream",
                 headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
@@ -487,7 +487,7 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
     case_id = session["case_id"]
     symptoms = list(session.get("collected_symptoms") or [])
     chief_text = (session.get("sq_chief_text") or "").strip()
-    allergies_list = list(session.get("allergies_list") or [])
+    allergies_text = (session.get("allergies_text") or "").strip() or "none"
     medications_list = list(session.get("medications_list") or [])
     patient_age = session.get("patient_age")
     history = session["message_history"]
@@ -547,14 +547,14 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
         symptoms=symptoms,
         patient_gender=session.get("patient_gender") or "unspecified",
         patient_name=session.get("patient_name") or "",
-        patient_dob=session.get("patient_dob") or "",
+        patient_dob="",
         patient_phone=session.get("patient_phone") or session.get("caller_e164", ""),
         patient_age=patient_age if isinstance(patient_age, int) else None,
         delivery_preference=session.get("delivery_preference") or "",
         duration_guess=duration,
         body_guess=body_area,
         severity=severity,
-        allergies=allergies_list,
+        allergies=allergies_text,
         medications=medications_list,
         chief_text=chief_text,
         api_key=ANTHROPIC_API_KEY,
@@ -572,7 +572,7 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
         "associated_symptoms": symptoms[1:] if len(symptoms) > 1 else [],
         "medical_history": [],
         "current_medications": medications_list,
-        "allergies": allergies_list,
+        "allergies": allergies_text,
         "triage_level": triage_level,
         "recommended_specialty": "general",
         "body_area": body_area,
@@ -581,7 +581,7 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
         "symptom_summary": symptom_summary_text,
         "patient_gender": session.get("patient_gender") or "unspecified",
         "patient_name": session.get("patient_name") or "",
-        "patient_dob": session.get("patient_dob") or "",
+        "patient_dob": "",
         "patient_phone": session.get("patient_phone") or session.get("caller_e164", ""),
         "delivery_preference": session.get("delivery_preference") or "",
     }

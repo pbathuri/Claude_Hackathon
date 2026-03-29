@@ -138,17 +138,22 @@ class AssignRequest(BaseModel):
     doctor_id: str
 
 
-@router.post("/{case_id}/assign")
+@router.api_route("/{case_id}/assign", methods=["POST", "PATCH"])
 def assign(
     case_id: str,
     req: AssignRequest,
     db: Session = Depends(get_db),
     _actor: dict = Depends(get_current_actor),
 ):
-    """Manually assign a case to a doctor."""
+    """Manually assign a case to a doctor (POST or PATCH; body: doctor_id)."""
     try:
         case = assign_case(db, case_id, req.doctor_id)
-        return {"status": "assigned", "case_id": case.id, "doctor_id": req.doctor_id}
+        return {
+            "success": True,
+            "status": "assigned",
+            "case_id": case.id,
+            "doctor_id": req.doctor_id,
+        }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

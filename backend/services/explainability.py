@@ -21,6 +21,17 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def _intake_allergies_as_list(allergies: Any) -> list[str]:
+    if allergies is None:
+        return []
+    if isinstance(allergies, list):
+        return [str(x).strip() for x in allergies if str(x).strip()]
+    s = str(allergies).strip()
+    if not s or s.lower() in ("none", "0"):
+        return []
+    return [p.strip() for p in s.split(",") if p.strip()] if "," in s else [s]
+
+
 def build_language_banner(
     patient_language: str,
     detected_languages: list[str] | None = None,
@@ -307,7 +318,7 @@ def build_case_explainability(
             duration=intake.get("duration"),
             body_area=intake.get("body_area"),
             medications=intake.get("current_medications"),
-            allergies=intake.get("allergies"),
+            allergies=_intake_allergies_as_list(intake.get("allergies")),
         ),
         "safety": build_safety_layer(
             triage_level=case_data.get("triage_level", "GREEN"),

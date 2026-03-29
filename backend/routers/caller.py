@@ -381,7 +381,7 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
         "associated_symptoms": req.symptoms[1:] if len(req.symptoms) > 1 else [],
         "medical_history": req.medical_history,
         "current_medications": req.current_medications,
-        "allergies": req.allergies,
+        "allergies": ", ".join(req.allergies) if req.allergies else "",
         "triage_level": triage_level,
         "recommended_specialty": "general",  # default, can be refined
         "body_area": req.body_area,
