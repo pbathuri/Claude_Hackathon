@@ -1,6 +1,5 @@
 import { Case, Doctor, BackpropResult, KGNavigationResult, KGStats, HottestPath, ConditionResult } from "@/types";
 import {
-  mockCases,
   mockKGNavigation,
   mockKGStats,
   mockHottestPaths,
@@ -8,7 +7,7 @@ import {
 } from "./mock-data";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const TIMEOUT_MS = 5000;
+const TIMEOUT_MS = 15000;
 
 let _isUsingMockData = false;
 export function isUsingMockData(): boolean { return _isUsingMockData; }
@@ -31,6 +30,7 @@ async function fetchWithFallback<T>(
     });
     clearTimeout(timeout);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _isUsingMockData = false;
     return await res.json();
   } catch {
     _isUsingMockData = true;
@@ -60,19 +60,18 @@ async function fetchStrict<T>(
   return await res.json();
 }
 
-// --- Cases (graceful fallback to mock when backend is down) ---
+// --- Cases (real data only — no mock scaffolding) ---
 
 export async function getCases(): Promise<Case[]> {
-  return fetchWithFallback(`${API_BASE}/cases/patient-cases`, mockCases);
+  return fetchWithFallback(`${API_BASE}/cases/patient-cases`, []);
 }
 
 export async function getCase(id: string): Promise<Case | null> {
-  const fallback = mockCases.find((c) => c.caseId === id) || null;
-  return fetchWithFallback(`${API_BASE}/cases/patient-cases/${id}`, fallback);
+  return fetchWithFallback(`${API_BASE}/cases/patient-cases/${id}`, null);
 }
 
 export async function getCaseQueue(): Promise<Case[]> {
-  return fetchWithFallback(`${API_BASE}/cases/queue`, mockCases.filter((c) => c.status === "pending_review"));
+  return fetchWithFallback(`${API_BASE}/cases/queue`, []);
 }
 
 // --- Doctors (live, no mock fallback) ---
