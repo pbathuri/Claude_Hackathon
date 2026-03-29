@@ -140,17 +140,43 @@ def root():
 def health_check():
     from config import (
         ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID,
-        REDIS_URL, TWILIO_ACCOUNT_SID,
+        REDIS_URL, TWILIO_ACCOUNT_SID, ANTHROPIC_API_KEY,
+        CONVERSATION_MODEL,
     )
     return {
         "status": "healthy",
         "apis": {
-            "claude": bool(os.environ.get("ANTHROPIC_API_KEY")),
+            "claude": bool(ANTHROPIC_API_KEY),
+            "claude_model": CONVERSATION_MODEL,
+            "claude_key_len": len(ANTHROPIC_API_KEY),
             "elevenlabs": bool(ELEVENLABS_API_KEY),
-            "elevenlabs_voice": ELEVENLABS_VOICE_ID,
-            "elevenlabs_model": ELEVENLABS_MODEL_ID,
             "twilio": bool(TWILIO_ACCOUNT_SID),
             "redis": bool(REDIS_URL),
             "knowledge_graph": is_knowledge_graph_enabled(),
+            "hf_token": bool(os.environ.get("HF_TOKEN", "")),
         },
     }
+
+
+@app.get("/debug/claude-test")
+def debug_claude():
+    """Quick test of Claude API to verify connectivity."""
+    from config import ANTHROPIC_API_KEY, CONVERSATION_MODEL
+    if not ANTHROPIC_API_KEY:
+        return {"error": "ANTHROPIC_API_KEY not set", "key_len": 0}
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        resp = client.messages.create(
+            model=CONVERSATION_MODEL,
+            max_tokens=50,
+            messages=[{"role": "user", "content": "Say hello in one sentence."}],
+        )
+        return {
+            "ok": True,
+            "model": CONVERSATION_MODEL,
+            "response": resp.content[0].text,
+            "key_len": len(ANTHROPIC_API_KEY),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "model": CONVERSATION_MODEL, "key_len": len(ANTHROPIC_API_KEY)}

@@ -82,6 +82,47 @@ def _get_anthropic():
     return _anthropic_client
 
 
+HF_MEDICAL_MODEL = "microsoft/BioGPT-Large"
+HF_CHAT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
+
+
+def _call_huggingface_medical(system_prompt: str, messages: list, user_message: str) -> str | None:
+    """Call HuggingFace Inference API as secondary LLM for medical intake."""
+    import httpx
+
+    hf_token = os.environ.get("HF_TOKEN", "")
+    if not hf_token:
+        return None
+
+    prompt_parts = [f"System: {system_prompt[:500]}"]
+    for m in messages[-4:]:
+        role = "Patient" if m["role"] == "user" else "Assistant"
+        prompt_parts.append(f"{role}: {m['content']}")
+    prompt_parts.append("Assistant:")
+    prompt = "\n".join(prompt_parts)
+
+    try:
+        resp = httpx.post(
+            f"https://api-inference.huggingface.co/models/{HF_CHAT_MODEL}",
+            headers={"Authorization": f"Bearer {hf_token}"},
+            json={
+                "inputs": prompt,
+                "parameters": {"max_new_tokens": 150, "temperature": 0.7, "return_full_text": False},
+            },
+            timeout=10.0,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and data:
+                text = data[0].get("generated_text", "").strip()
+                if text and len(text) > 10:
+                    first_line = text.split("\n")[0].strip()
+                    return first_line if first_line else text[:200]
+    except Exception:
+        pass
+    return None
+
+
 router = APIRouter(prefix="/caller", tags=["caller-api"])
 
 
@@ -686,6 +727,18 @@ def _extract_symptoms_from_text(text: str, graph) -> list[str]:
     return found
 
 
+_FALLBACK_QUESTIONS = [
+    "How long have you been experiencing these symptoms?",
+    "On a scale of 1 to 10, how severe is the discomfort?",
+    "Do you have any other symptoms you haven't mentioned?",
+    "Do you have any chronic conditions or medical history I should know about?",
+    "Are you currently taking any medications?",
+    "Do you have any known allergies?",
+    "Has anything made the symptoms better or worse?",
+    "Have you traveled recently or been exposed to anyone who is sick?",
+]
+
+
 def _generate_fallback_message(
     turn: int,
     new_symptoms: list[str],
@@ -695,52 +748,39 @@ def _generate_fallback_message(
     emergency_flags: list[str],
     should_complete: bool,
 ) -> str:
-    """Rule-based fallback when Claude API is unavailable."""
+    """Rule-based fallback when Claude API is unavailable. Uses turn-indexed
+    questions to avoid repetition even without LLM context."""
     if is_emergency:
         flags_str = ", ".join(emergency_flags) if emergency_flags else "critical symptoms"
         return (
             f"I'm detecting potential emergency indicators: {flags_str}. "
-            "Please call emergency services (112 / 911) immediately. "
-            "Do not wait — your safety is the priority. "
-            "If someone is with you, ask them to call while we continue."
+            "Please call emergency services immediately. "
+            "Do not wait — your safety is the priority."
         )
 
     if should_complete:
         symptom_str = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
         return (
-            f"Thank you for sharing this information. I've recorded: {symptom_str}. "
-            "Your case is now being submitted to a qualified physician who will "
-            "review everything and get back to you shortly. "
-            "If your condition worsens, please seek emergency care immediately."
+            f"Thank you for sharing. I've recorded: {symptom_str}. "
+            "Your case is being submitted to a physician for review. "
+            "If your condition worsens, please seek emergency care."
         )
 
-    next_q = ""
-    if suggested_questions:
-        next_q = f" {suggested_questions[0]['question']}"
+    # Pick a question by turn index (never repeats across turns)
+    q_idx = max(0, turn - 2)
+    next_q = _FALLBACK_QUESTIONS[q_idx % len(_FALLBACK_QUESTIONS)]
 
     if turn == 1:
         if new_symptoms:
-            symptom_str = ", ".join(new_symptoms)
             return (
-                f"Thank you for calling. I understand you're experiencing {symptom_str}. "
-                f"I'd like to ask a few questions to better understand your situation.{next_q}"
+                f"Thank you for calling. I understand you're experiencing "
+                f"{', '.join(new_symptoms)}. {next_q}"
             )
-        return (
-            "Thank you for calling. I'm here to help assess your symptoms. "
-            f"Could you describe what you're experiencing?{next_q}"
-        )
+        return f"Thank you for calling. I'm here to help. {next_q}"
 
-    if turn <= 4:
-        if new_symptoms:
-            new_str = ", ".join(new_symptoms)
-            return f"I see, you also have {new_str}. That's helpful to know.{next_q}"
-        return f"Thank you.{next_q}" if next_q else "Could you tell me more about how you're feeling?"
-
-    symptom_str = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
-    return (
-        f"Thank you for all this information. I've noted: {symptom_str}. "
-        "I'm now preparing your case for a physician to review."
-    )
+    if new_symptoms:
+        return f"I see, you also have {', '.join(new_symptoms)}. {next_q}"
+    return f"Thank you for that information. {next_q}"
 
 
 def _generate_claude_response(
@@ -887,9 +927,13 @@ def _generate_claude_response(
     messages = []
     for msg in message_history:
         if msg.get("role") in ("user", "assistant") and msg.get("content"):
-            messages.append({"role": msg["role"], "content": msg["content"]})
+            content = msg["content"]
+            if not isinstance(content, str):
+                content = str(content)
+            messages.append({"role": msg["role"], "content": content})
     messages.append({"role": "user", "content": user_message})
 
+    # --- Primary: Claude API ---
     try:
         client = _get_anthropic()
         response = client.messages.create(
@@ -898,18 +942,32 @@ def _generate_claude_response(
             system=system_prompt,
             messages=messages,
         )
-        return response.content[0].text
+        result = response.content[0].text
+        kg_logger.info("[Claude] Turn %d OK: %s", turn_number, result[:80])
+        return result
     except Exception as exc:
-        kg_logger.warning("[Claude] API call failed, falling back to rule-based: %s", exc)
-        return _generate_fallback_message(
-            turn=turn_number,
-            new_symptoms=[],
-            all_symptoms=all_symptoms,
-            suggested_questions=suggested_questions,
-            is_emergency=is_emergency,
-            emergency_flags=emergency_flags,
-            should_complete=should_complete,
-        )
+        kg_logger.error("[Claude] API call failed: %s", exc, exc_info=True)
+
+    # --- Secondary: HuggingFace medical model via Inference API ---
+    try:
+        hf_result = _call_huggingface_medical(system_prompt, messages, user_message)
+        if hf_result:
+            kg_logger.info("[HuggingFace] Turn %d OK: %s", turn_number, hf_result[:80])
+            return hf_result
+    except Exception as exc:
+        kg_logger.warning("[HuggingFace] Fallback also failed: %s", exc)
+
+    # --- Tertiary: rule-based fallback ---
+    kg_logger.warning("[Fallback] Using rule-based for turn %d", turn_number)
+    return _generate_fallback_message(
+        turn=turn_number,
+        new_symptoms=[],
+        all_symptoms=all_symptoms,
+        suggested_questions=fresh_questions if use_knowledge_graph else suggested_questions,
+        is_emergency=is_emergency,
+        emergency_flags=emergency_flags,
+        should_complete=should_complete,
+    )
 
 
 # Tracks turns with no new symptoms per case for auto-completion
