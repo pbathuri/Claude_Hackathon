@@ -1,13 +1,62 @@
 """
 Country detection from phone numbers and permission matrix enforcement.
 Uses Google's libphonenumber for parsing, DB-backed permission matrix.
+Falls back to PHONE_COUNTRY_MAP (longest-prefix match) when parsing fails.
 """
 import hashlib
+import re
 import phonenumbers
 from phonenumbers import geocoder
 from sqlalchemy.orm import Session
 
 from models import CountryPermission, Patient
+
+# E.164 prefix → (ISO 3166-1 alpha-2, English display name).
+# Longer prefixes MUST be listed and matched before shorter ones (see resolve_country_from_e164_prefix).
+PHONE_COUNTRY_MAP: dict[str, tuple[str, str]] = {
+    # NANP: Dominican Republic (before generic +1)
+    "+1809": ("DO", "Dominican Republic"),
+    "+1829": ("DO", "Dominican Republic"),
+    "+1849": ("DO", "Dominican Republic"),
+    # Spec / common routes (ITU-style; longest keys win when iterating sorted by length)
+    "+1": ("US", "United States"),
+    "+7": ("RU", "Russia"),
+    "+20": ("EG", "Egypt"),
+    "+27": ("ZA", "South Africa"),
+    "+30": ("GR", "Greece"),
+    "+31": ("NL", "Netherlands"),
+    "+32": ("BE", "Belgium"),
+    "+33": ("FR", "France"),
+    "+34": ("ES", "Spain"),
+    "+36": ("HU", "Hungary"),
+    "+39": ("IT", "Italy"),
+    "+40": ("RO", "Romania"),
+    "+41": ("CH", "Switzerland"),
+    "+43": ("AT", "Austria"),
+    "+44": ("GB", "United Kingdom"),
+    "+45": ("DK", "Denmark"),
+    "+46": ("SE", "Sweden"),
+    "+47": ("NO", "Norway"),
+}
+
+_PHONE_PREFIXES_SORTED: tuple[str, ...] = tuple(
+    sorted(PHONE_COUNTRY_MAP.keys(), key=len, reverse=True)
+)
+
+# Display names when Case.detected_country_code is set but no CountryPermission row exists.
+ALPHA2_ENGLISH_DISPLAY: dict[str, str] = {
+    a2: name for _, (a2, name) in PHONE_COUNTRY_MAP.items()
+}
+ALPHA2_ENGLISH_DISPLAY.update(
+    {
+        "NG": "Nigeria",
+        "IN": "India",
+        "PH": "Philippines",
+        "KE": "Kenya",
+        "CA": "Canada",
+        "ZZ": "Unknown / International (Tier 4)",
+    }
+)
 
 
 # ISO alpha-2 → alpha-3 mapping for WHO GHO API (extend as needed)
@@ -49,14 +98,49 @@ ALPHA2_TO_ALPHA3 = {
 TIER4_JURISDICTION_CODE = "ZZ"
 
 
+def normalize_phone_e164(raw: str) -> str:
+    """
+    Turn Twilio-style caller IDs into a single +digits string for parsing / prefix match.
+    Ignores client: and sip: identifiers (no geographic country).
+    """
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    low = s.lower()
+    if low.startswith("client:") or low.startswith("sip:"):
+        return ""
+    digits = re.sub(r"\D", "", s)
+    if not digits:
+        return ""
+    return f"+{digits}"
+
+
+def resolve_country_from_e164_prefix(e164: str) -> tuple[str, str, str] | None:
+    """
+    Longest-prefix match against PHONE_COUNTRY_MAP.
+    Returns (iso_alpha2, english_name, matched_prefix) or None.
+    """
+    if not e164.startswith("+"):
+        return None
+    for prefix in _PHONE_PREFIXES_SORTED:
+        if e164.startswith(prefix):
+            a2, name = PHONE_COUNTRY_MAP[prefix]
+            return (a2, name, prefix)
+    return None
+
+
 def parse_phone(phone_str: str) -> dict:
     """Parse an international phone number into country info."""
+    normalized = normalize_phone_e164(phone_str)
+    if not normalized:
+        return {"error": "Could not parse phone number"}
+
     try:
-        parsed = phonenumbers.parse(phone_str, None)
+        parsed = phonenumbers.parse(normalized, None)
     except phonenumbers.NumberParseException:
         return {"error": "Could not parse phone number"}
 
-    if not phonenumbers.is_valid_number(parsed):
+    if not phonenumbers.is_possible_number(parsed):
         return {"error": "Invalid phone number"}
 
     cc = phonenumbers.region_code_for_number(parsed)
@@ -86,12 +170,25 @@ def normalize_caller_jurisdiction(db: Session, caller_number: str) -> dict:
     """
     Map a Twilio From number to jurisdiction country code for permissions.
 
-    - Parse failure → Tier 4 (ZZ) with best-effort E.164.
+    - Parse failure → try PHONE_COUNTRY_MAP longest-prefix on normalized +digits.
+    - Still no match → Tier 4 (ZZ) with best-effort E.164.
     - Parsed country not in permission matrix → Tier 4 (ZZ) but preserve
       detected_country_code for audit on the Case.
     """
     raw = (caller_number or "").strip()
+    normalized = normalize_phone_e164(raw)
     info = parse_phone(raw)
+    if "error" in info and normalized:
+        hit = resolve_country_from_e164_prefix(normalized)
+        if hit:
+            a2, name, _ = hit
+            info = {
+                "e164": normalized,
+                "country_code": a2,
+                "country_alpha3": ALPHA2_TO_ALPHA3.get(a2, a2),
+                "country_name": name,
+            }
+
     if "error" not in info:
         detected = info["country_code"]
         perm = get_country_permissions(db, detected)
@@ -114,7 +211,11 @@ def normalize_caller_jurisdiction(db: Session, caller_number: str) -> dict:
             "detected_country_code": detected,
         }
 
-    e164 = raw if raw.startswith("+") else (f"+{raw}" if raw else "+00000000000")
+    e164 = normalized if normalized else (
+        raw if raw.startswith("+") else (f"+{re.sub(r'\D', '', raw)}" if raw else "+00000000000")
+    )
+    if not e164.startswith("+"):
+        e164 = f"+{e164.lstrip('+')}" if e164 else "+00000000000"
     return {
         "phone_info": {
             "e164": e164,
@@ -127,6 +228,25 @@ def normalize_caller_jurisdiction(db: Session, caller_number: str) -> dict:
         "jurisdiction_code": TIER4_JURISDICTION_CODE,
         "detected_country_code": None,
     }
+
+
+def country_display_name_for_portal(
+    case_country_code: str,
+    detected_country_code: str | None,
+    perms: dict[str, CountryPermission],
+) -> str:
+    """Human-readable country for doctor portal (e.g. Recent Cases) when jurisdiction is ZZ but phone country is known."""
+    dc = (detected_country_code or "").strip().upper() or None
+    if dc and dc not in ("ZZ",):
+        row = perms.get(dc)
+        if row:
+            return row.country_name
+        return ALPHA2_ENGLISH_DISPLAY.get(dc, dc)
+    cc = (case_country_code or "").strip().upper()
+    row = perms.get(cc)
+    if row:
+        return row.country_name
+    return cc or "Unknown"
 
 
 def check_teleconsult_allowed(db: Session, country_code: str) -> dict:
