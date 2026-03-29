@@ -24,3 +24,7 @@ services:
         sync: false
       - key: TWILIO_PHONE_NUMBER
         value: "+14788125405"
+      - key: SKIP_PIPELINE_ENRICHMENT
+        value: "1"
+      - key: DEMO_MODE
+        value: "1"

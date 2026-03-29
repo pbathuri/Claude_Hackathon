@@ -3,18 +3,26 @@ Twilio Voice Webhook router.
 Handles inbound phone calls via Twilio, collecting symptoms through
 multi-turn voice conversation using <Gather> speech recognition.
 
-Language support:
-  - Detects language from first speech input via Whisper language detection
-  - Configures Twilio <Gather> with correct language code
-  - AI responses translated to caller's language before being spoken
-  - All clinical processing runs in English behind the scenes
+Pipeline per turn:
+  1. Twilio <Gather> → speech-to-text (caller's words)
+  2. Language detection + translation to English
+  3. KG symptom extraction + navigation (activated conditions, follow-up Qs)
+  4. Claude API generates contextual response using KG context
+  5. ElevenLabs TTS converts response to natural speech audio
+  6. Twilio <Play> streams the audio back to the caller
+  7. Next <Gather> opens for the caller's reply
 
 Flow: Twilio POST /twilio/voice → verbal disclosure + first Gather
       → POST /twilio/gather (loop) → submit case or hangup
 """
+import hashlib
+import os
+from urllib.parse import quote
+
 from fastapi import APIRouter, Request, Depends
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
+import httpx
 import logging
 
 from database import get_db
@@ -36,6 +44,7 @@ from services.language_service import (
 )
 from config import (
     is_knowledge_graph_enabled,
+    ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID,
     CONVERSATION_MODEL, CONVERSATION_MAX_TOKENS,
     MIN_SYMPTOMS_FOR_COMPLETE, MAX_TURNS_BEFORE_COMPLETE,
     GRAPH_CONFIDENCE_THRESHOLD,
@@ -53,6 +62,9 @@ router = APIRouter(prefix="/twilio", tags=["twilio-voice"])
 
 # Per-call session state
 _call_sessions: dict[str, dict] = {}
+
+# In-memory cache for ElevenLabs audio (keyed by text hash, cleared per deploy)
+_tts_cache: dict[str, bytes] = {}
 
 
 # ─── XML helpers ────────────────────────────────────────────────────────────
@@ -73,15 +85,65 @@ def _twiml(body: str) -> Response:
 
 
 def _truncate_for_tts(text: str, max_chars: int = 1500) -> str:
-    """Truncate text to stay within Twilio Say limits."""
     if len(text) <= max_chars:
         return text
-    # Cut at last sentence boundary before limit
     truncated = text[:max_chars]
     last_period = truncated.rfind(". ")
     if last_period > max_chars // 2:
         return truncated[:last_period + 1]
     return truncated
+
+
+def _tts_hash(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _speak_twiml(text: str, voice: str, base_url: str) -> str:
+    """Return TwiML that uses ElevenLabs <Play> if available, else <Say>."""
+    if not ELEVENLABS_API_KEY:
+        safe = _escape_xml(_truncate_for_tts(text))
+        return f'  <Say voice="{voice}">{safe}</Say>\n'
+    encoded = quote(text[:2000], safe="")
+    return f'  <Play>/twilio/tts-audio?text={encoded}</Play>\n'
+
+
+# ─── GET /twilio/tts-audio — ElevenLabs audio for Twilio <Play> ────────────
+
+@router.get("/tts-audio")
+async def tts_audio_for_twilio(text: str):
+    """Twilio fetches this URL from <Play> to stream ElevenLabs audio."""
+    if not text or not text.strip():
+        return Response(status_code=204)
+
+    text = text[:2000]
+    cache_key = _tts_hash(text)
+
+    if cache_key in _tts_cache:
+        return Response(content=_tts_cache[cache_key], media_type="audio/mpeg")
+
+    if not ELEVENLABS_API_KEY:
+        return Response(status_code=503, content=b"ElevenLabs not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream",
+                headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+                json={
+                    "text": text,
+                    "model_id": ELEVENLABS_MODEL_ID,
+                    "voice_settings": {"stability": 0.75, "similarity_boost": 0.75},
+                },
+            )
+        if resp.status_code != 200:
+            logger.warning("[TTS] ElevenLabs HTTP %d for Twilio Play", resp.status_code)
+            return Response(status_code=502, content=b"TTS error")
+        audio = resp.content
+        _tts_cache[cache_key] = audio
+        return Response(content=audio, media_type="audio/mpeg")
+    except Exception as exc:
+        logger.warning("[TTS] ElevenLabs error for Twilio: %s", exc)
+        return Response(status_code=502, content=b"TTS unavailable")
 
 
 # ─── POST /twilio/voice — incoming call webhook ────────────────────────────
@@ -148,19 +210,23 @@ async def incoming_call(request: Request, db: Session = Depends(get_db)):
     voice = lang_cfg["twilio_voice"]
     gather_lang = lang_cfg["twilio_lang"]
 
-    safe_disc = _escape_xml(_truncate_for_tts(shortened))
-    # speechTimeout=auto + experimental_conversations: natural pauses + better dialogue STT
-    # (production-hardening branch; fixes cut-off speech vs fixed 3s window)
+    base_url = str(request.base_url).rstrip("/")
+    welcome_text = f"Welcome to the WHO Health Access Service. {shortened}"
+    welcome_play = _speak_twiml(welcome_text, voice, base_url)
+    ask_text = "Please describe your main symptoms. What brings you to call today?"
+    ask_play = _speak_twiml(ask_text, voice, base_url)
+    noinput_text = "I didn't catch that. Please call back when you're ready."
+    noinput_play = _speak_twiml(noinput_text, voice, base_url)
+
     return _twiml(
-        f'  <Say voice="{voice}">Welcome to the WHO Health Access Service. {safe_disc}</Say>\n'
+        f'{welcome_play}'
         '  <Pause length="1"/>\n'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
         f' speechTimeout="auto" speechModel="experimental_conversations"'
         f' language="{gather_lang}">\n'
-        f'    <Say voice="{voice}">Please describe your main symptoms.'
-        " What brings you to call today?</Say>\n"
+        f'{ask_play}'
         "  </Gather>\n"
-        f'  <Say voice="{voice}">I didn\'t catch that. Please call back when you\'re ready.</Say>'
+        f'{noinput_play}'
     )
 
 
@@ -336,7 +402,8 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
     session["message_history"].append({"role": "assistant", "content": ai_response})
     session["turn"] = turn + 1
 
-    safe_resp = _escape_xml(_truncate_for_tts(spoken_response))
+    base_url = str(request.base_url).rstrip("/")
+    resp_play = _speak_twiml(spoken_response, voice, base_url)
 
     # ── 7. Emergency → advise caller + hangup ────────────────────────────
     if is_emergency:
@@ -346,12 +413,11 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
             logger.error("[Twilio] Emergency case submission failed: %s", exc)
         _call_sessions.pop(call_sid, None)
 
-        emerg = get_emergency_number(country_code)
         emerg_msg = build_emergency_message(country_code, user_lang, emergency_flags)
-        safe_emerg = _escape_xml(_truncate_for_tts(emerg_msg))
+        emerg_play = _speak_twiml(emerg_msg, voice, base_url)
         return _twiml(
-            f'  <Say voice="{voice}">{safe_emerg}</Say>\n'
-            f"  <Hangup/>"
+            f'{emerg_play}'
+            "  <Hangup/>"
         )
 
     # ── 8. Complete → submit case + summary + hangup ─────────────────────
@@ -362,10 +428,6 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
             logger.error("[Twilio] Case submission failed: %s", exc)
         _call_sessions.pop(call_sid, None)
 
-        symptom_str = _escape_xml(
-            ", ".join(all_symptoms) if all_symptoms else "your symptoms"
-        )
-        # Translate completion notice
         completion_msg = (
             f"Your case has been submitted. A physician will review "
             f"{', '.join(all_symptoms) if all_symptoms else 'your symptoms'} "
@@ -373,35 +435,34 @@ async def gather_speech(request: Request, db: Session = Depends(get_db)):
         )
         if user_lang != "en":
             completion_msg = translate_from_english(completion_msg, user_lang)
-        safe_completion = _escape_xml(_truncate_for_tts(completion_msg))
+        complete_play = _speak_twiml(completion_msg, voice, base_url)
 
         return _twiml(
-            f'  <Say voice="{voice}">{safe_resp}</Say>\n'
+            f'{resp_play}'
             '  <Pause length="1"/>\n'
-            f'  <Say voice="{voice}">{safe_completion}</Say>\n'
+            f'{complete_play}'
             "  <Hangup/>"
         )
 
     # ── 9. Continue → respond + gather next turn ─────────────────────────
-    # Translate "Go ahead" prompt
     listen_prompt = "Go ahead, I'm listening."
     if user_lang != "en":
         listen_prompt = translate_from_english(listen_prompt, user_lang)
-    safe_listen = _escape_xml(listen_prompt)
+    listen_play = _speak_twiml(listen_prompt, voice, base_url)
 
     no_input_msg = "I didn't catch that. Please call back when you're ready."
     if user_lang != "en":
         no_input_msg = translate_from_english(no_input_msg, user_lang)
-    safe_noinput = _escape_xml(no_input_msg)
+    noinput_play = _speak_twiml(no_input_msg, voice, base_url)
 
     return _twiml(
-        f'  <Say voice="{voice}">{safe_resp}</Say>\n'
+        f'{resp_play}'
         f'  <Gather input="speech" action="/twilio/gather" method="POST"'
         f' speechTimeout="auto" speechModel="experimental_conversations"'
         f' language="{gather_lang}">\n'
-        f'    <Say voice="{voice}">{safe_listen}</Say>\n'
+        f'{listen_play}'
         "  </Gather>\n"
-        f'  <Say voice="{voice}">{safe_noinput}</Say>'
+        f'{noinput_play}'
     )
 
 
