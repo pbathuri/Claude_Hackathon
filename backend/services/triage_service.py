@@ -3,6 +3,9 @@ START (Simple Triage and Rapid Treatment) protocol adapted for phone-based asses
 Classifies patients into RED / YELLOW / GREEN / BLACK based on proxy questions
 that can be asked over a phone call.
 """
+from __future__ import annotations
+
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -88,21 +91,74 @@ def get_base_score(triage_level: str) -> float:
     return float(TRIAGE_BASE_SCORES.get(triage_level, 10))
 
 
-# Emergency keywords that should trigger immediate RED classification
-EMERGENCY_KEYWORDS = [
-    "chest pain", "chest tightness", "can't breathe", "cannot breathe",
-    "difficulty breathing", "shortness of breath", "stroke",
-    "face drooping", "arm weakness", "slurred speech",
-    "severe bleeding", "major trauma", "unconscious", "unresponsive",
-    "suicidal", "self-harm", "throat swelling", "anaphylaxis",
-    "seizure", "convulsion", "heart attack",
+# Phrases: substring match (multi-word, specific enough to avoid false positives).
+# Omit vague phrases like "shortness of breath" / "difficulty breathing" here — they
+# still influence YELLOW triage via detect_red_flags on submit, but must not block intake.
+_EMERGENCY_PHRASES = [
+    "chest pain",
+    "chest tightness",
+    "can't breathe",
+    "cannot breathe",
+    "heart attack",
+    "face drooping",
+    "arm weakness",
+    "slurred speech",
+    "severe bleeding",
+    "bleeding heavily",
+    "major trauma",
+    "unconscious",
+    "unresponsive",
+    "passed out",
+    "throat swelling",
+    "throat closing",
+    "anaphylaxis",
+    "self-harm",
+    "kill myself",
+    "kill yourself",
+    "want to die",
+    "stopped breathing",
+    "not breathing",
+]
+
+# Single tokens / tight patterns: word boundaries so "heatstroke" does not match "stroke".
+_EMERGENCY_WORD_RES = [
+    re.compile(r"\bstroke\b", re.IGNORECASE),
+    re.compile(r"\bseizure\b", re.IGNORECASE),
+    re.compile(r"\bconvulsions?\b", re.IGNORECASE),
+    re.compile(r"\bsuicidal\b", re.IGNORECASE),
+    re.compile(r"\bsuicide\b", re.IGNORECASE),
+]
+
+# Backward compat: flat list for code that iterates keywords (e.g. submit red flag labels)
+EMERGENCY_KEYWORDS = list(_EMERGENCY_PHRASES) + [
+    "stroke",
+    "seizure",
+    "convulsion",
+    "suicidal",
+    "suicide",
 ]
 
 
 def check_emergency_keywords(text: str) -> bool:
-    """Check if text contains emergency keywords warranting RED triage."""
-    lower = text.lower()
-    return any(kw in lower for kw in EMERGENCY_KEYWORDS)
+    """True only for clear, immediate-danger phrases (does not block on mild dyspnea)."""
+    return len(emergency_keyword_hits(text)) > 0
+
+
+def emergency_keyword_hits(text: str) -> list[str]:
+    """Labels for matched immediate-danger phrases (word-safe; no heatstroke→stroke)."""
+    if not text or not str(text).strip():
+        return []
+    lower = str(text).lower()
+    hits: list[str] = []
+    for phrase in _EMERGENCY_PHRASES:
+        if phrase in lower:
+            hits.append(phrase.title())
+    for rx in _EMERGENCY_WORD_RES:
+        m = rx.search(text)
+        if m:
+            hits.append(m.group(0).title())
+    # Dedupe preserving order
+    return list(dict.fromkeys(hits))
 
 
 def build_triage_breakdown(

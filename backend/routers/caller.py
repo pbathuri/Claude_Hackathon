@@ -44,8 +44,13 @@ from services.case_service import (
     get_case_for_frontend, URGENCY_SCORES, TIER_SCORES,
     compute_frontend_priority, TRIAGE_TO_URGENCY,
 )
-from services.triage_service import check_emergency_keywords, get_base_score, build_triage_breakdown
-from safety.red_flag_rules import detect_red_flags
+from services.triage_service import (
+    check_emergency_keywords,
+    emergency_keyword_hits,
+    get_base_score,
+    build_triage_breakdown,
+)
+from safety.red_flag_rules import RedFlagSeverity, detect_red_flags
 from services.icd11_service import map_intake_to_icd11, search_icd11
 from services.language_service import (
     detect_language,
@@ -339,12 +344,9 @@ async def submit_conversation(req: SubmitConversationRequest, db: Session = Depe
     for symptom in req.symptoms:
         if check_emergency_keywords(symptom):
             red_flags.append(symptom)
-    if check_emergency_keywords(req.transcript_summary):
-        from services.triage_service import EMERGENCY_KEYWORDS
-        lower_text = all_text.lower()
-        for kw in EMERGENCY_KEYWORDS:
-            if kw in lower_text:
-                red_flags.append(kw.title())
+    for hit in emergency_keyword_hits(req.transcript_summary):
+        if hit not in red_flags:
+            red_flags.append(hit)
     # Merge safety engine flags
     for flag_info in red_flag_result.flags:
         raw_flag = flag_info.get("flag") or flag_info.get("matched_text") or ""
@@ -940,7 +942,11 @@ def _generate_claude_response(
         "- NEVER repeat a question or phrase from a previous turn.\n"
         "- Acknowledge what the patient just said, then ask ONE new question.\n"
         "- Progress through the intake: symptoms → duration → severity → history → medications → allergies.\n"
-        "- RESPOND IN ENGLISH ONLY.\n\n"
+        "- RESPOND IN ENGLISH ONLY.\n"
+        "- Likely conditions from the knowledge graph are statistical hypotheses, NOT diagnoses. "
+        "Do NOT tell the patient to call emergency services based only on those labels. "
+        "Only give an urgent emergency directive if the system block below says "
+        "\"EMERGENCY DETECTED\".\n\n"
         f"INTAKE PROGRESS:\n{progress_block}\n"
         f"{context_header}:\n{kg_block}\n\n"
         f"{followup_rule}"
@@ -1072,13 +1078,31 @@ async def ai_conversation_turn(req: AITurnRequest):
         except Exception as exc:
             kg_logger.warning("[AI Turn] KG navigation failed (non-blocking): %s", exc)
 
-    # ── 5. Emergency check (on English text for reliable keyword matching) ──
-    is_emergency = check_emergency_keywords(english_message)
-    emergency_flags: list[str] = []
-    if is_emergency:
-        from services.triage_service import EMERGENCY_KEYWORDS
-        lower = english_message.lower()
-        emergency_flags = [kw.title() for kw in EMERGENCY_KEYWORDS if kw in lower]
+    # ── 5. Case country + safety (IMMEDIATE only — not URGENT / not KG hypotheses) ──
+    case_country = ""
+    try:
+        from database import SessionLocal
+        _db = SessionLocal()
+        _case = _db.query(Case).filter_by(id=req.case_id).first()
+        if _case:
+            case_country = _case.country_code or ""
+        _db.close()
+    except Exception:
+        pass
+
+    rf_turn = detect_red_flags(
+        english_message,
+        case_country,
+        language="en",
+        english_text=english_message,
+    )
+    is_emergency = rf_turn.is_emergency
+    emergency_flags = [
+        (f.get("matched_text") or f.get("flag") or "").strip()
+        for f in rf_turn.flags
+        if f.get("severity") == RedFlagSeverity.IMMEDIATE.value
+        and (f.get("matched_text") or f.get("flag"))
+    ]
 
     # ── 6. Determine completion (smarter heuristics from config) ──
     new_count = len([s for s in detected_symptoms if s not in req.collected_symptoms])
@@ -1134,19 +1158,7 @@ async def ai_conversation_turn(req: AITurnRequest):
         if body:
             claude_history.append({"role": msg["role"], "content": body})
 
-    # ── 9. Get country code for localized emergency numbers ──
-    case_country = ""
-    try:
-        from database import SessionLocal
-        db = SessionLocal()
-        case = db.query(Case).filter_by(id=req.case_id).first()
-        if case:
-            case_country = case.country_code or ""
-        db.close()
-    except Exception:
-        pass
-
-    # ── 10. Generate AI response via Claude (in English) ──
+    # ── 9. Generate AI response via Claude (in English) ──
     previous_msgs = session_store.case_ai_history_get(req.case_id)
     ai_message_english = _generate_claude_response(
         turn_number=req.turn_number,
@@ -1167,13 +1179,13 @@ async def ai_conversation_turn(req: AITurnRequest):
     # Track for anti-repetition
     session_store.case_ai_history_append(req.case_id, ai_message_english)
 
-    # ── 11. Translate AI response to user's language ──
+    # ── 10. Translate AI response to user's language ──
     ai_message = ai_message_english
     if user_lang != "en":
         ai_message = translate_from_english(ai_message_english, user_lang)
         kg_logger.info("[AI Turn] Translated response en→%s", user_lang)
 
-    # ── 12. Generate clinical summary on completion (always in English) ──
+    # ── 11. Generate clinical summary on completion (always in English) ──
     transcript_summary = None
     if should_complete and all_symptoms:
         try:

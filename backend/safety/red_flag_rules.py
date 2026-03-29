@@ -80,7 +80,7 @@ EMERGENCY_KEYWORDS_URGENT = [
     "sudden weakness one side", "numbness one side",
     "severe headache worst ever", "thunderclap headache",
     "stiff neck with fever", "neck stiffness fever",
-    "confusion", "disoriented", "altered consciousness",
+    "severe confusion", "altered consciousness", "disoriented and confused",
     "pregnant bleeding", "pregnancy bleeding", "vaginal bleeding pregnant",
     "severe dehydration", "not urinating", "no urine output",
     "infant not feeding", "baby not breathing well", "child limp",
@@ -213,14 +213,15 @@ def detect_red_flags(
             if match:
                 result.add_flag("multilingual_pattern", match.group(), severity, f"multilingual:{category}")
 
-    # Tier 3: Knowledge graph activation check
+    # Tier 3: Knowledge graph — hypotheses only, not diagnoses. Never IMMEDIATE from KG
+    # alone (would false-positive e.g. headache+fever → meningitis and block the whole intake).
     if kg_context:
         for cond in kg_context.get("activated_conditions", []):
-            if cond.get("is_emergency") and cond.get("activation_score", 0) > 0.3:
+            if cond.get("is_emergency") and cond.get("activation_score", 0) > 0.75:
                 result.add_flag(
                     "knowledge_graph",
                     f"kg:{cond['condition']}",
-                    RedFlagSeverity.IMMEDIATE,
+                    RedFlagSeverity.WARNING,
                     f"kg_activation:{cond['condition']}",
                 )
 

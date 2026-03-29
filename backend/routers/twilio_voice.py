@@ -406,7 +406,8 @@ async def gather_speech(
         english_text=english_speech,
         kg_context=kg_context_for_safety,
     )
-    is_emergency = rf.is_emergency or rf.severity == RedFlagSeverity.URGENT
+    # URGENT widens triage on submit; only IMMEDIATE stops the voice flow as "emergency".
+    is_emergency = rf.is_emergency
     emergency_flags = [
         (f.get("matched_text") or f.get("flag") or "").strip()
         for f in rf.flags
@@ -578,16 +579,15 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
     case_row = db.query(Case).filter_by(id=case_id).first()
     cc = case_row.country_code if case_row else ""
     rf_submit = detect_red_flags(all_text, cc, english_text=all_text)
-    is_emergency = rf_submit.is_emergency or rf_submit.severity == RedFlagSeverity.URGENT
     red_flags = [
         (f.get("matched_text") or f.get("flag") or "").strip()
         for f in rf_submit.flags
         if (f.get("matched_text") or f.get("flag"))
     ]
 
-    if is_emergency:
+    if rf_submit.is_emergency:
         triage_level = "RED"
-    elif len(symptoms) >= 4 or red_flags:
+    elif rf_submit.severity == RedFlagSeverity.URGENT or len(symptoms) >= 4 or red_flags:
         triage_level = "YELLOW"
     else:
         triage_level = "GREEN"
