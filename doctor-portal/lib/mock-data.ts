@@ -1,0 +1,278 @@
+import { Case, KGNavigationResult, KGStats, HottestPath, ConditionResult } from "@/types";
+
+export const mockCases: Case[] = [
+  {
+    caseId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    patientAlias: "PT-9243",
+    patientAge: 34,
+    patientGender: "Female",
+    clinicalDiagnosis: "Acute abdominal pain — rule out appendicitis",
+    country: "Kenya",
+    countryTier: 3,
+    urgency: "High",
+    symptomSummary: "Fever and persistent abdominal pain",
+    painScore: 7,
+    symptomDuration: "3 days",
+    bodyArea: "Abdomen",
+    imageUrls: [],
+    consentGiven: true,
+    submittedAt: "2026-03-28T06:07:57Z",
+    aiStructuredNotes:
+      "Caller reports worsening abdominal pain that began 3 days ago. Pain is localized to the right lower quadrant, rated 7/10. Accompanied by fever (self-reported ~38.5°C). No vomiting but reports nausea. No recent travel or dietary changes. Rebound tenderness suspected based on caller description.",
+    redFlagIndicators: ["Persistent pain", "Fever", "RLQ tenderness"],
+    priorityScore: 80.0,
+    status: "pending_review",
+  },
+  {
+    caseId: "b2c3d4e5-f6a7-8901-bcde-f23456789012",
+    patientAlias: "PT-1847",
+    country: "Nigeria",
+    countryTier: 3,
+    urgency: "High",
+    symptomSummary: "Severe headache with visual disturbances and neck stiffness",
+    painScore: 9,
+    symptomDuration: "1 day",
+    bodyArea: "Head",
+    imageUrls: [],
+    consentGiven: true,
+    submittedAt: "2026-03-28T05:30:00Z",
+    aiStructuredNotes:
+      "Caller reports sudden onset severe headache with photophobia and neck stiffness. Visual disturbances described as 'seeing spots'. No recent head trauma. History of hypertension reported. Kernig's sign could not be assessed remotely.",
+    redFlagIndicators: ["Sudden severe headache", "Neck stiffness", "Visual disturbance"],
+    priorityScore: 92.0,
+    status: "pending_review",
+  },
+  {
+    caseId: "c3d4e5f6-a7b8-9012-cdef-345678901234",
+    patientAlias: "PT-5612",
+    country: "India",
+    countryTier: 2,
+    urgency: "Medium",
+    symptomSummary: "Persistent cough with mild chest discomfort",
+    painScore: 4,
+    symptomDuration: "7 days",
+    bodyArea: "Chest",
+    imageUrls: [],
+    consentGiven: true,
+    submittedAt: "2026-03-28T04:15:00Z",
+    aiStructuredNotes:
+      "Caller reports dry cough persisting for one week. Mild chest discomfort when coughing. No fever, no hemoptysis. Occasional dyspnea on exertion. Non-smoker. No TB contacts known.",
+    redFlagIndicators: ["Persistent cough >5 days"],
+    priorityScore: 55.0,
+    status: "assigned",
+    assignedDoctor: "Dr. Amara",
+  },
+  {
+    caseId: "d4e5f6a7-b8c9-0123-defa-456789012345",
+    patientAlias: "PT-3390",
+    country: "Philippines",
+    countryTier: 2,
+    urgency: "Low",
+    symptomSummary: "Mild skin rash on forearms, no pain",
+    painScore: 1,
+    symptomDuration: "5 days",
+    bodyArea: "Skin",
+    imageUrls: [],
+    consentGiven: true,
+    submittedAt: "2026-03-28T03:45:00Z",
+    aiStructuredNotes:
+      "Caller reports red, slightly itchy rash on both forearms. No pain, no fever, no spreading to other areas. No new medications or environmental changes. No known allergies.",
+    redFlagIndicators: [],
+    priorityScore: 20.0,
+    status: "responded",
+    assignedDoctor: "Dr. Chen",
+  },
+  {
+    caseId: "e5f6a7b8-c9d0-1234-efab-567890123456",
+    patientAlias: "PT-7781",
+    country: "Kenya",
+    countryTier: 3,
+    urgency: "Medium",
+    symptomSummary: "Recurring joint pain in knees and ankles with swelling",
+    painScore: 6,
+    symptomDuration: "2 weeks",
+    bodyArea: "Joints",
+    imageUrls: [],
+    consentGiven: true,
+    submittedAt: "2026-03-27T22:00:00Z",
+    aiStructuredNotes:
+      "Caller reports bilateral knee and ankle pain with visible swelling. Pain worsens in the morning and improves with activity. No recent injury. Occasional low-grade fever. Family history of rheumatic disease unknown.",
+    redFlagIndicators: ["Joint swelling", "Fever"],
+    priorityScore: 60.0,
+    status: "pending_review",
+  },
+  {
+    caseId: "f6a7b8c9-d0e1-2345-fabc-678901234567",
+    patientAlias: "PT-4456",
+    country: "Nigeria",
+    countryTier: 3,
+    urgency: "High",
+    symptomSummary: "Chest pain radiating to left arm with shortness of breath",
+    painScore: 8,
+    symptomDuration: "2 hours",
+    bodyArea: "Chest",
+    imageUrls: [],
+    consentGiven: true,
+    submittedAt: "2026-03-28T06:45:00Z",
+    aiStructuredNotes:
+      "Caller reports acute onset crushing chest pain radiating to left arm. Shortness of breath and diaphoresis present. Male, estimated 55 years. Reports history of Type 2 diabetes. Pain described as pressure/squeezing. No prior cardiac history known.",
+    redFlagIndicators: ["Chest pain", "Radiating to arm", "Shortness of breath", "Diaphoresis"],
+    priorityScore: 95.0,
+    status: "pending_review",
+  },
+  {
+    caseId: "a7b8c9d0-e1f2-3456-abcd-789012345678",
+    patientAlias: "PT-2198",
+    country: "India",
+    countryTier: 2,
+    urgency: "Low",
+    symptomSummary: "Intermittent stomach discomfort after meals",
+    painScore: 3,
+    symptomDuration: "10 days",
+    bodyArea: "Abdomen",
+    imageUrls: [],
+    consentGiven: true,
+    submittedAt: "2026-03-27T18:30:00Z",
+    aiStructuredNotes:
+      "Caller reports bloating and mild epigastric discomfort after meals, particularly heavy or spicy foods. No vomiting, no diarrhea, no melena. Appetite slightly decreased. No weight loss reported.",
+    redFlagIndicators: [],
+    priorityScore: 25.0,
+    status: "assigned",
+    assignedDoctor: "Dr. Müller",
+  },
+  {
+    caseId: "b8c9d0e1-f2a3-4567-bcde-890123456789",
+    patientAlias: "PT-6634",
+    country: "Philippines",
+    countryTier: 2,
+    urgency: "Medium",
+    symptomSummary: "High fever with body aches and fatigue for 4 days",
+    painScore: 5,
+    symptomDuration: "4 days",
+    bodyArea: "Systemic",
+    imageUrls: [],
+    consentGiven: true,
+    submittedAt: "2026-03-28T01:20:00Z",
+    aiStructuredNotes:
+      "Caller reports high fever (self-measured 39.2°C), generalized myalgia, fatigue, and mild frontal headache for 4 days. No rash, no cough, no respiratory symptoms. Lives in dengue-endemic area. No recent travel outside region.",
+    redFlagIndicators: ["High fever >4 days", "Dengue-endemic area"],
+    priorityScore: 65.0,
+    status: "pending_review",
+  },
+];
+
+export const mockKGNavigation: KGNavigationResult = {
+  conditions: [
+    { name: "Acute Appendicitis", score: 0.85, specialty: "General Surgery" },
+    { name: "Gastroenteritis", score: 0.72, specialty: "Internal Medicine" },
+    { name: "Urinary Tract Infection", score: 0.45, specialty: "Urology" },
+    { name: "Ovarian Torsion", score: 0.38, specialty: "Gynecology" },
+  ],
+  recommendedSpecialty: "General Surgery",
+  followUpQuestions: [
+    "Has the pain migrated from around the navel to the right lower quadrant?",
+    "Is the pain worse with movement or coughing?",
+    "Have you experienced loss of appetite recently?",
+    "Any history of similar episodes?",
+  ],
+  bodySystemMapping: {
+    Gastrointestinal: ["Abdominal pain", "Nausea"],
+    "Immune / Systemic": ["Fever"],
+    Urinary: ["Potential referred pain"],
+  },
+  graphPaths: [
+    { from: "Fever", to: "Infection", weight: 0.9, type: "symptom-condition" },
+    { from: "Abdominal Pain", to: "Acute Appendicitis", weight: 0.85, type: "symptom-condition" },
+    { from: "Acute Appendicitis", to: "General Surgery", weight: 0.95, type: "condition-specialty" },
+    { from: "Abdominal Pain", to: "Gastroenteritis", weight: 0.72, type: "symptom-condition" },
+    { from: "Gastroenteritis", to: "Internal Medicine", weight: 0.8, type: "condition-specialty" },
+    { from: "Fever", to: "Gastroenteritis", weight: 0.6, type: "symptom-condition" },
+  ],
+};
+
+export const mockKGStats: KGStats = {
+  totalNodes: 1247,
+  totalEdges: 3891,
+  learnedEdges: 456,
+  specialties: [
+    "General Surgery",
+    "Internal Medicine",
+    "Cardiology",
+    "Neurology",
+    "Pediatrics",
+    "Dermatology",
+    "Urology",
+    "Gynecology",
+    "Pulmonology",
+    "Orthopedics",
+    "Emergency Medicine",
+    "Psychiatry",
+  ],
+  lastUpdated: "2026-03-28T05:00:00Z",
+};
+
+export const mockHottestPaths: HottestPath[] = [
+  { source: "Chest Pain", target: "Acute Coronary Syndrome", conductivity: 0.94, pathType: "symptom → condition" },
+  { source: "Fever + Headache", target: "Meningitis", conductivity: 0.89, pathType: "symptom → condition" },
+  { source: "Acute Coronary Syndrome", target: "Cardiology", conductivity: 0.97, pathType: "condition → specialty" },
+  { source: "Abdominal Pain + Fever", target: "Appendicitis", conductivity: 0.86, pathType: "symptom → condition" },
+  { source: "Shortness of Breath", target: "Pulmonary Embolism", conductivity: 0.82, pathType: "symptom → condition" },
+  { source: "Rash + Fever", target: "Dengue Fever", conductivity: 0.80, pathType: "symptom → condition" },
+  { source: "Joint Pain + Swelling", target: "Rheumatoid Arthritis", conductivity: 0.78, pathType: "symptom → condition" },
+  { source: "Meningitis", target: "Neurology", conductivity: 0.95, pathType: "condition → specialty" },
+  { source: "Cough + Hemoptysis", target: "Tuberculosis", conductivity: 0.76, pathType: "symptom → condition" },
+  { source: "Pulmonary Embolism", target: "Pulmonology", conductivity: 0.91, pathType: "condition → specialty" },
+];
+
+export function getMockConditions(symptom: string): ConditionResult {
+  const conditionMap: Record<string, ConditionResult> = {
+    fever: {
+      symptom: "fever",
+      conditions: [
+        { name: "Malaria", probability: 0.75, severity: "High" },
+        { name: "Dengue Fever", probability: 0.68, severity: "High" },
+        { name: "Urinary Tract Infection", probability: 0.55, severity: "Medium" },
+        { name: "Upper Respiratory Infection", probability: 0.50, severity: "Low" },
+        { name: "Typhoid Fever", probability: 0.42, severity: "High" },
+      ],
+    },
+    headache: {
+      symptom: "headache",
+      conditions: [
+        { name: "Meningitis", probability: 0.60, severity: "High" },
+        { name: "Migraine", probability: 0.72, severity: "Medium" },
+        { name: "Tension Headache", probability: 0.80, severity: "Low" },
+        { name: "Subarachnoid Hemorrhage", probability: 0.25, severity: "High" },
+      ],
+    },
+    cough: {
+      symptom: "cough",
+      conditions: [
+        { name: "Tuberculosis", probability: 0.45, severity: "High" },
+        { name: "Pneumonia", probability: 0.60, severity: "High" },
+        { name: "Bronchitis", probability: 0.70, severity: "Medium" },
+        { name: "Asthma", probability: 0.55, severity: "Medium" },
+        { name: "Common Cold", probability: 0.85, severity: "Low" },
+      ],
+    },
+    "chest pain": {
+      symptom: "chest pain",
+      conditions: [
+        { name: "Acute Coronary Syndrome", probability: 0.65, severity: "High" },
+        { name: "Pulmonary Embolism", probability: 0.40, severity: "High" },
+        { name: "Costochondritis", probability: 0.50, severity: "Low" },
+        { name: "GERD", probability: 0.55, severity: "Low" },
+      ],
+    },
+  };
+
+  const key = symptom.toLowerCase().trim();
+  return (
+    conditionMap[key] || {
+      symptom: key,
+      conditions: [
+        { name: "Condition data unavailable", probability: 0, severity: "Low" },
+      ],
+    }
+  );
+}
