@@ -17,11 +17,15 @@ export default function Sidebar() {
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [displayName, setDisplayName] = useState("Doctor");
+  const [specialty, setSpecialty] = useState("");
+  const [hospital, setHospital] = useState("");
 
   useEffect(() => {
     const p = getCurrentProfile();
     if (p?.fullName) setDisplayName(p.fullName);
-  }, []);
+    setSpecialty(p?.specialty ?? "");
+    setHospital(p?.hospitalAffiliation ?? "");
+  }, [pathname]);
 
   const isActive = (href: string) =>
     href === "/dashboard" ? pathname === "/dashboard" : pathname.startsWith(href);
@@ -76,7 +80,13 @@ export default function Sidebar() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-gray-200 truncate">{displayName}</p>
-            <div className="flex items-center gap-1.5">
+            {specialty ? (
+              <p className="text-[11px] text-gray-400 truncate mt-0.5">{specialty}</p>
+            ) : null}
+            {hospital ? (
+              <p className="text-[10px] text-gray-500 truncate mt-0.5 leading-snug">{hospital}</p>
+            ) : null}
+            <div className="flex items-center gap-1.5 mt-1">
               <span className="w-2 h-2 rounded-full bg-triage-green animate-pulse" />
               <span className="text-[11px] text-gray-500">Signed in</span>
             </div>

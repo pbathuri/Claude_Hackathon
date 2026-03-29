@@ -3,17 +3,24 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { login } from "@/lib/auth-storage";
+import {
+  login,
+  ensureDemoDoctorSeeded,
+  DEMO_DOCTOR_LICENSE,
+  DEMO_DOCTOR_EMAIL,
+  DEMO_DOCTOR_PASSWORD,
+} from "@/lib/auth-storage";
 import { Shield } from "lucide-react";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [licenseNumber, setLicenseNumber] = useState("");
-  const [password, setPassword] = useState("");
+  const [licenseNumber, setLicenseNumber] = useState(DEMO_DOCTOR_LICENSE);
+  const [password, setPassword] = useState(DEMO_DOCTOR_PASSWORD);
   const [error, setError] = useState<string | null>(null);
   const [nextPath, setNextPath] = useState("/dashboard");
 
   useEffect(() => {
+    ensureDemoDoctorSeeded();
     const q = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("next") : null;
     if (q && q.startsWith("/") && !q.startsWith("//")) setNextPath(q);
   }, []);
@@ -21,6 +28,7 @@ export default function LoginPage() {
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    ensureDemoDoctorSeeded();
     const result = login(licenseNumber, password);
     if (!result.ok) {
       setError(result.error);
@@ -42,13 +50,19 @@ export default function LoginPage() {
             </Link>
             <h1 className="mt-6 text-2xl font-heading font-bold text-gray-900">Log in</h1>
             <p className="mt-2 text-sm text-gray-600">Use your medical license number and password.</p>
+            <p className="mt-3 text-xs text-gray-500 bg-blue-50/80 border border-blue-100 rounded-lg px-3 py-2 text-left">
+              <span className="font-semibold text-who-blue">Demo account:</span>{" "}
+              <code className="text-[11px] bg-white px-1 rounded">{DEMO_DOCTOR_EMAIL}</code> or{" "}
+              <code className="text-[11px] bg-white px-1 rounded">{DEMO_DOCTOR_LICENSE}</code> · Password{" "}
+              <code className="text-[11px] bg-white px-1 rounded">{DEMO_DOCTOR_PASSWORD}</code>
+            </p>
           </div>
 
           <div className="rounded-2xl border border-gray-200 bg-white p-8 shadow-sm">
             <form onSubmit={onSubmit} className="space-y-5">
               <div>
                 <label htmlFor="license" className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">
-                  Medical license number
+                  Email (.org) or Medical license number
                 </label>
                 <input
                   id="license"

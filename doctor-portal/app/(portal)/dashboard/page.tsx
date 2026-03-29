@@ -10,9 +10,11 @@ import PieChart from "@/components/PieChart";
 import BarChart from "@/components/BarChart";
 import ClinicalUrgencyBadge from "@/components/ClinicalUrgencyBadge";
 import CountryIndicator from "@/components/CountryIndicator";
-import PriorityBar from "@/components/PriorityBar";
 import LoadingSpinner from "@/components/LoadingSpinner";
-import { FileText, AlertTriangle, CalendarClock, Gauge, UserCheck, Clock } from "lucide-react";
+import { FileText, AlertTriangle, CalendarClock, Gauge, Clock } from "lucide-react";
+import { getCurrentProfile } from "@/lib/auth-storage";
+import { mergeDoctorsForOnlinePanel } from "@/lib/doctors-online";
+import DoctorsOnlinePanel, { DoctorsOnlineFloating } from "@/components/DoctorsOnlinePanel";
 
 const POLL_FALLBACK_MS = 60_000;
 
@@ -75,19 +77,32 @@ export default function DashboardPage() {
     .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime())
     .slice(0, 5);
 
+  const profile = getCurrentProfile();
+  const doctorsForPanel = mergeDoctorsForOnlinePanel(doctors);
+
   return (
     <div className="space-y-6">
+      <DoctorsOnlineFloating doctors={doctorsForPanel} />
+
+      <div className="xl:grid xl:grid-cols-[1fr_288px] xl:gap-6 xl:items-start">
+        <div className="space-y-6 min-w-0">
       <div className="flex items-end justify-between flex-wrap gap-4">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-2xl font-heading font-bold text-gray-900">
-              {getGreeting()}, Doctor
+              {getGreeting()}
+              {profile?.fullName ? `, ${profile.fullName}` : ", Doctor"}
             </h1>
             <span className="flex items-center gap-1.5 bg-green-50 border border-green-200 rounded-full px-2.5 py-0.5">
               <span className="w-2 h-2 rounded-full bg-triage-green animate-pulse" />
               <span className="text-[11px] font-bold text-triage-green uppercase tracking-wide">Live</span>
             </span>
           </div>
+          {profile?.specialty && profile?.hospitalAffiliation ? (
+            <p className="text-sm text-gray-600 mt-1.5 font-medium">
+              {profile.specialty} · {profile.hospitalAffiliation}
+            </p>
+          ) : null}
           <p className="text-sm text-gray-500 mt-1">
             {new Date().toLocaleDateString("en-US", {
               weekday: "long",
@@ -169,57 +184,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm">
-          <h2 className="font-heading font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <UserCheck className="w-5 h-5 text-who-blue" />
-            Doctor Status
-          </h2>
-          {doctors.length === 0 ? (
-            <div className="text-center py-8 text-gray-400">
-              <UserCheck className="w-8 h-8 mx-auto mb-2 opacity-40" />
-              <p className="text-sm font-medium">No doctors online</p>
-              <p className="text-xs mt-1">Doctors will appear here once registered</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {doctors.map((doc) => (
-                <div key={doc.id} className="flex items-center justify-between py-2">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-600">
-                      {doc.full_name.split(" ").map((n) => n[0]).join("").slice(0, 2)}
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-800">{doc.full_name}</p>
-                      <p className="text-[11px] text-gray-400">
-                        {doc.specialization} &middot; {doc.country_code}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={`w-2 h-2 rounded-full ${
-                        doc.availability
-                          ? "bg-triage-green animate-pulse"
-                          : "bg-gray-300"
-                      }`}
-                    />
-                    <span className="text-xs text-gray-500">
-                      {doc.availability === "online" ? "Available" : "Offline"}
-                    </span>
-                    {doc.verified && (
-                      <span className="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded-full font-semibold ml-1">
-                        Verified
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm">
+      <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm">
           <h2 className="font-heading font-semibold text-gray-900 mb-4 flex items-center gap-2">
             <Clock className="w-5 h-5 text-who-blue" />
             Recent Cases
@@ -268,6 +233,11 @@ export default function DashboardPage() {
             ))}
           </div>
         </div>
+        </div>
+
+        <aside className="hidden xl:block shrink-0 w-full max-w-[288px] mx-auto xl:mx-0">
+          <DoctorsOnlinePanel doctors={doctorsForPanel} className="sticky top-6" />
+        </aside>
       </div>
     </div>
   );

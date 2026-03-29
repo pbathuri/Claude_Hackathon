@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { signUp } from "@/lib/auth-storage";
+import { signUp, ensureDemoDoctorSeeded } from "@/lib/auth-storage";
 import { Shield } from "lucide-react";
 
 export default function SignUpPage() {
@@ -15,6 +15,10 @@ export default function SignUpPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    ensureDemoDoctorSeeded();
+  }, []);
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();

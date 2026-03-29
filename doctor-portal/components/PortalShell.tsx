@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
 import LoadingSpinner from "@/components/LoadingSpinner";
-import { isLoggedIn } from "@/lib/auth-storage";
+import { ensureDemoDoctorSeeded, isLoggedIn } from "@/lib/auth-storage";
 
 export default function PortalShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -12,6 +12,7 @@ export default function PortalShell({ children }: { children: React.ReactNode })
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
+    ensureDemoDoctorSeeded();
     setChecked(true);
   }, []);
 
