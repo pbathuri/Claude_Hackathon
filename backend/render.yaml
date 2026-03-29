@@ -13,9 +13,9 @@ services:
       - key: ELEVENLABS_API_KEY
         sync: false
       - key: ELEVENLABS_VOICE_ID
-        value: Xb7hH8MSUJpSbSDYk0k2
+        value: EXAVITQu4vr4xnSDxMaL
       - key: ELEVENLABS_MODEL_ID
-        value: eleven_flash_v2_5
+        value: eleven_multilingual_v2
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN
