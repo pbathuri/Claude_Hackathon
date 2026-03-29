@@ -138,15 +138,17 @@ def root():
 
 @app.get("/health-check")
 def health_check():
-    from config import ELEVENLABS_API_KEY, REDIS_URL, TWILIO_ACCOUNT_SID
-    el_keys = sorted([k for k in os.environ if "eleven" in k.lower() or "ELEVEN" in k])
+    from config import (
+        ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID,
+        REDIS_URL, TWILIO_ACCOUNT_SID,
+    )
     return {
         "status": "healthy",
         "apis": {
             "claude": bool(os.environ.get("ANTHROPIC_API_KEY")),
             "elevenlabs": bool(ELEVENLABS_API_KEY),
-            "elevenlabs_env_raw": len(os.environ.get("ELEVENLABS_API_KEY", "")),
-            "elevenlabs_env_keys": el_keys,
+            "elevenlabs_voice": ELEVENLABS_VOICE_ID,
+            "elevenlabs_model": ELEVENLABS_MODEL_ID,
             "twilio": bool(TWILIO_ACCOUNT_SID),
             "redis": bool(REDIS_URL),
             "knowledge_graph": is_knowledge_graph_enabled(),
