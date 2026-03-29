@@ -7,8 +7,7 @@ services:
     runtime: python
     name: who-triage-backend
     rootDir: backend
-    buildCommand: pip install -r requirements.txt && python -c "import alembic, psycopg2"
-    preDeployCommand: python -m alembic upgrade head
+    buildCommand: pip install -r requirements.txt && python -m alembic upgrade head
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
