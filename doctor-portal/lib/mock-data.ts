@@ -17,8 +17,6 @@ export const mockCases: Case[] = [
     imageUrls: [],
     consentGiven: true,
     submittedAt: "2026-03-28T06:07:57Z",
-    aiStructuredNotes:
-      "Caller reports worsening abdominal pain that began 3 days ago. Pain is localized to the right lower quadrant, rated 7/10. Accompanied by fever (self-reported ~38.5°C). No vomiting but reports nausea. No recent travel or dietary changes. Rebound tenderness suspected based on caller description.",
     redFlagIndicators: ["Persistent pain", "Fever", "RLQ tenderness"],
     priorityScore: 80.0,
     status: "pending_review",
@@ -36,8 +34,6 @@ export const mockCases: Case[] = [
     imageUrls: [],
     consentGiven: true,
     submittedAt: "2026-03-28T05:30:00Z",
-    aiStructuredNotes:
-      "Caller reports sudden onset severe headache with photophobia and neck stiffness. Visual disturbances described as 'seeing spots'. No recent head trauma. History of hypertension reported. Kernig's sign could not be assessed remotely.",
     redFlagIndicators: ["Sudden severe headache", "Neck stiffness", "Visual disturbance"],
     priorityScore: 92.0,
     status: "pending_review",
@@ -55,8 +51,6 @@ export const mockCases: Case[] = [
     imageUrls: [],
     consentGiven: true,
     submittedAt: "2026-03-28T04:15:00Z",
-    aiStructuredNotes:
-      "Caller reports dry cough persisting for one week. Mild chest discomfort when coughing. No fever, no hemoptysis. Occasional dyspnea on exertion. Non-smoker. No TB contacts known.",
     redFlagIndicators: ["Persistent cough >5 days"],
     priorityScore: 55.0,
     status: "assigned",
@@ -75,8 +69,6 @@ export const mockCases: Case[] = [
     imageUrls: [],
     consentGiven: true,
     submittedAt: "2026-03-28T03:45:00Z",
-    aiStructuredNotes:
-      "Caller reports red, slightly itchy rash on both forearms. No pain, no fever, no spreading to other areas. No new medications or environmental changes. No known allergies.",
     redFlagIndicators: [],
     priorityScore: 20.0,
     status: "responded",
@@ -95,8 +87,6 @@ export const mockCases: Case[] = [
     imageUrls: [],
     consentGiven: true,
     submittedAt: "2026-03-27T22:00:00Z",
-    aiStructuredNotes:
-      "Caller reports bilateral knee and ankle pain with visible swelling. Pain worsens in the morning and improves with activity. No recent injury. Occasional low-grade fever. Family history of rheumatic disease unknown.",
     redFlagIndicators: ["Joint swelling", "Fever"],
     priorityScore: 60.0,
     status: "pending_review",
@@ -114,8 +104,6 @@ export const mockCases: Case[] = [
     imageUrls: [],
     consentGiven: true,
     submittedAt: "2026-03-28T06:45:00Z",
-    aiStructuredNotes:
-      "Caller reports acute onset crushing chest pain radiating to left arm. Shortness of breath and diaphoresis present. Male, estimated 55 years. Reports history of Type 2 diabetes. Pain described as pressure/squeezing. No prior cardiac history known.",
     redFlagIndicators: ["Chest pain", "Radiating to arm", "Shortness of breath", "Diaphoresis"],
     priorityScore: 95.0,
     status: "pending_review",
@@ -133,8 +121,6 @@ export const mockCases: Case[] = [
     imageUrls: [],
     consentGiven: true,
     submittedAt: "2026-03-27T18:30:00Z",
-    aiStructuredNotes:
-      "Caller reports bloating and mild epigastric discomfort after meals, particularly heavy or spicy foods. No vomiting, no diarrhea, no melena. Appetite slightly decreased. No weight loss reported.",
     redFlagIndicators: [],
     priorityScore: 25.0,
     status: "assigned",
@@ -153,8 +139,6 @@ export const mockCases: Case[] = [
     imageUrls: [],
     consentGiven: true,
     submittedAt: "2026-03-28T01:20:00Z",
-    aiStructuredNotes:
-      "Caller reports high fever (self-measured 39.2°C), generalized myalgia, fatigue, and mild frontal headache for 4 days. No rash, no cough, no respiratory symptoms. Lives in dengue-endemic area. No recent travel outside region.",
     redFlagIndicators: ["High fever >4 days", "Dengue-endemic area"],
     priorityScore: 65.0,
     status: "pending_review",

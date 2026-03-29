@@ -32,6 +32,7 @@ class IntakeData(BaseModel):
     patient_name: str = ""
     patient_dob: str = ""
     patient_phone: str = ""
+    patient_age: int | None = None
     delivery_preference: str = ""
     kg_insights: dict[str, Any] | None = None
 

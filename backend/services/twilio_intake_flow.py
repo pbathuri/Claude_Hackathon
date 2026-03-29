@@ -1,13 +1,14 @@
 """
-Twilio voice: ordered demographic intake + helpers for duration/body extraction.
-Timeouts scaled to 80% of prior defaults (see GATHER_* / READY_TONE_*).
+Twilio voice: strict sequential intake (one question per <Gather> callback).
+Timeouts scaled to 80% of typical defaults (see GATHER_* / READY_TONE_*).
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,16 @@ logger = logging.getLogger(__name__)
 GATHER_TIMEOUT_SEC = 4
 GATHER_SPEECH_TIMEOUT = "4"
 READY_TONE_DURATION_SEC = 1.6
+
+Action = Literal["gather_next", "submit_case", "consent_refused"]
+
+_COMMON_SYMPTOM_WORDS = [
+    "fever", "headache", "cough", "nausea", "vomiting", "diarrhea",
+    "fatigue", "dizziness", "chest pain", "abdominal pain", "rash",
+    "sore throat", "body aches", "chills", "shortness of breath",
+    "back pain", "joint pain", "loss of appetite", "weight loss",
+    "pain", "bleeding", "swelling", "weakness",
+]
 
 _BODY_KEYWORDS = [
     ("chest", "chest"),
@@ -44,8 +55,14 @@ _BODY_KEYWORDS = [
 ]
 
 
+@dataclass
+class IntakeStepResult:
+    reply_en: str
+    next_phase: str
+    action: Action
+
+
 def format_e164_for_speech(e164: str) -> str:
-    """Speakable form of E.164 (digit by digit with pauses)."""
     digits = re.sub(r"\D", "", e164 or "")
     if not digits:
         return "your number on file"
@@ -63,9 +80,9 @@ def parse_gender(speech: str) -> str:
 
 def parse_yes_no(speech: str) -> bool | None:
     low = (speech or "").lower()
-    if any(w in low for w in ("yes", "yeah", "yep", "correct", "right", "sure", "confirm")):
+    if any(w in low for w in ("yes", "yeah", "yep", "correct", "right", "sure", "confirm", "i consent", "consent")):
         return True
-    if any(w in low for w in ("no", "nope", "wrong", "incorrect", "not correct", "not right")):
+    if any(w in low for w in ("no", "nope", "wrong", "incorrect", "not correct", "not right", "don't", "do not")):
         return False
     return None
 
@@ -82,8 +99,7 @@ def parse_delivery(speech: str) -> str | None:
 
 
 def extract_phone_digits(speech: str) -> str:
-    d = re.sub(r"\D", "", speech or "")
-    return d
+    return re.sub(r"\D", "", speech or "")
 
 
 def extract_duration_from_speech(speech: str) -> str:
@@ -94,7 +110,7 @@ def extract_duration_from_speech(speech: str) -> str:
     m2 = re.search(r"since\s+(yesterday|last\s+\w+)", t, re.IGNORECASE)
     if m2:
         return f"since {m2.group(1)}"
-    return ""
+    return (t or "").strip()[:120]
 
 
 def extract_body_area_from_speech(speech: str) -> str:
@@ -102,7 +118,50 @@ def extract_body_area_from_speech(speech: str) -> str:
     for kw, label in _BODY_KEYWORDS:
         if kw in low:
             return label
-    return ""
+    return (speech or "").strip()[:120]
+
+
+def parse_age(speech: str) -> int | None:
+    for m in re.finditer(r"\b(\d{1,3})\b", speech or ""):
+        n = int(m.group(1))
+        if 1 <= n <= 120:
+            return n
+    return None
+
+
+def parse_pain_0_10(speech: str) -> int | None:
+    m = re.search(r"\b(10|[0-9])\b", speech or "")
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if 0 <= n <= 10 else None
+
+
+def symptoms_from_chief_text(chief: str) -> list[str]:
+    low = (chief or "").lower()
+    found = [s for s in _COMMON_SYMPTOM_WORDS if s in low]
+    if found:
+        return list(dict.fromkeys(found))
+    words = [w.strip(".,!?") for w in low.split() if len(w) > 2]
+    return list(dict.fromkeys(words[:8])) if words else ["unspecified symptom"]
+
+
+def parse_allergy_list(speech: str) -> list[str]:
+    low = (speech or "").lower().strip()
+    if not low:
+        return []
+    if any(x in low for x in ("no allergy", "no known", "nkda", "none", "no allergies")):
+        return []
+    return [s.strip() for s in re.split(r"[,;]", speech) if s.strip()][:20]
+
+
+def parse_medication_list(speech: str) -> list[str]:
+    low = (speech or "").lower().strip()
+    if not low:
+        return []
+    if low in ("none", "no", "no medications", "not taking", "nothing"):
+        return []
+    return [s.strip() for s in re.split(r"[,;]", speech) if s.strip()][:30]
 
 
 async def claude_parse_dob(speech: str, api_key: str, model: str) -> str:
@@ -135,44 +194,60 @@ async def claude_parse_dob(speech: str, api_key: str, model: str) -> str:
     return ""
 
 
-async def advance_twilio_demographics(
+async def advance_twilio_intake_step(
     session: dict[str, Any],
     english_speech: str,
     *,
     anthropic_api_key: str,
     intake_model: str,
-) -> tuple[str, str]:
+) -> IntakeStepResult:
     """
-    Process one demographic step. Mutates session (patient_* fields).
-    Returns (assistant_message_english, next_phase).
-    next_phase is one of: gender, name, dob, phone_confirm, phone_retry, delivery, symptoms
+    One step per Twilio Gather callback. Mutates session.
     """
-    phase = session.get("intake_phase", "symptoms")
+    phase = session.get("intake_phase", "name")
     speech = (english_speech or "").strip()
     e164 = session.get("caller_e164", "") or ""
 
-    if phase == "gender":
-        session["patient_gender"] = parse_gender(speech)
-        return (
-            "Thank you. Please state your full name.",
-            "name",
-        )
-
     if phase == "name":
         session["patient_name"] = speech[:200] if speech else "Not provided"
-        return (
-            "Please state your date of birth. Say the 4-digit year, then 2-digit month, "
-            "then 2-digit day. For example: 1990, 03, 15.",
+        return IntakeStepResult(
+            "How old are you? Please say your age.",
+            "age",
+            "gather_next",
+        )
+
+    if phase == "age":
+        age = parse_age(speech)
+        if age is None:
+            return IntakeStepResult(
+                "I didn't catch that. How old are you? Please say your age as a number.",
+                "age",
+                "gather_next",
+            )
+        session["patient_age"] = age
+        return IntakeStepResult(
+            "Are you male or female? Please say male or female.",
+            "gender",
+            "gather_next",
+        )
+
+    if phase == "gender":
+        session["patient_gender"] = parse_gender(speech)
+        return IntakeStepResult(
+            "Please say your date of birth. Say the 4-digit year first, then the 2-digit month, "
+            "then the 2-digit day. For example: 1990, 03, 15.",
             "dob",
+            "gather_next",
         )
 
     if phase == "dob":
         dob = await claude_parse_dob(speech, anthropic_api_key, intake_model)
         session["patient_dob"] = dob or ""
         spoken_num = format_e164_for_speech(e164)
-        return (
+        return IntakeStepResult(
             f"We have your phone number on file as {spoken_num}. Is this correct? Please say yes or no.",
             "phone_confirm",
+            "gather_next",
         )
 
     if phase == "phone_confirm":
@@ -180,45 +255,133 @@ async def advance_twilio_demographics(
         if yn is True:
             session["patient_phone"] = e164
             session["patient_phone_confirmed"] = True
-            return (
-                "How would you like to receive your results from the doctor? "
-                "Say 1 for Voice Message, 2 for Text or SMS, or 3 for Phone Call.",
-                "delivery",
+            return IntakeStepResult(
+                "Do you consent to the collection and use of your personal information "
+                "for medical purposes? Please say yes or no.",
+                "consent",
+                "gather_next",
             )
         if yn is False:
-            return (
+            return IntakeStepResult(
                 "Please say your correct phone number, including country code if you know it.",
                 "phone_retry",
+                "gather_next",
             )
-        return (
+        return IntakeStepResult(
             "I didn't catch that. Is the number we have on file correct? Please say yes or no.",
             "phone_confirm",
+            "gather_next",
         )
 
     if phase == "phone_retry":
         digits = extract_phone_digits(speech)
         session["patient_phone"] = f"+{digits}" if digits else e164
         session["patient_phone_confirmed"] = bool(digits)
-        return (
+        return IntakeStepResult(
+            "Do you consent to the collection and use of your personal information "
+            "for medical purposes? Please say yes or no.",
+            "consent",
+            "gather_next",
+        )
+
+    if phase == "consent":
+        yn = parse_yes_no(speech)
+        if yn is True:
+            session["intake_consent_granted"] = True
+            return IntakeStepResult(
+                "What is your main symptom or reason for calling today?",
+                "sq_chief",
+                "gather_next",
+            )
+        if yn is False:
+            return IntakeStepResult(
+                "Understood. Your information will not be stored. Thank you for calling. Goodbye.",
+                "consent_denied",
+                "consent_refused",
+            )
+        return IntakeStepResult(
+            "Please say yes if you consent, or no if you do not.",
+            "consent",
+            "gather_next",
+        )
+
+    if phase == "sq_chief":
+        session["sq_chief_text"] = speech[:500] if speech else "Not specified"
+        session["collected_symptoms"] = symptoms_from_chief_text(speech)
+        return IntakeStepResult(
+            "What part of your body is affected? For example: chest, head, abdomen, or back.",
+            "sq_body",
+            "gather_next",
+        )
+
+    if phase == "sq_body":
+        session["twilio_stored_body_area"] = extract_body_area_from_speech(speech) or (speech or "").strip()[:120]
+        return IntakeStepResult(
+            "On a scale of zero to ten, how severe is the pain or discomfort? Zero is none, ten is the worst.",
+            "sq_pain",
+            "gather_next",
+        )
+
+    if phase == "sq_pain":
+        pain = parse_pain_0_10(speech)
+        if pain is None:
+            return IntakeStepResult(
+                "Please say a number from zero to ten for your pain level.",
+                "sq_pain",
+                "gather_next",
+            )
+        session["twilio_pain_score"] = pain
+        return IntakeStepResult(
+            "How long have you had these symptoms? For example: two days, one week, or three hours.",
+            "sq_duration",
+            "gather_next",
+        )
+
+    if phase == "sq_duration":
+        session["twilio_stored_duration"] = extract_duration_from_speech(speech) or (speech or "").strip()[:120]
+        return IntakeStepResult(
+            "Do you have any known allergies? Please say them, or say none if you have no allergies.",
+            "sq_allergies",
+            "gather_next",
+        )
+
+    if phase == "sq_allergies":
+        session["allergies_list"] = parse_allergy_list(speech)
+        return IntakeStepResult(
+            "What medications are you currently taking? Or say none.",
+            "sq_meds",
+            "gather_next",
+        )
+
+    if phase == "sq_meds":
+        session["medications_list"] = parse_medication_list(speech)
+        return IntakeStepResult(
             "How would you like to receive your results from the doctor? "
             "Say 1 for Voice Message, 2 for Text or SMS, or 3 for Phone Call.",
-            "delivery",
+            "sq_delivery",
+            "gather_next",
         )
 
-    if phase == "delivery":
+    if phase == "sq_delivery":
         pref = parse_delivery(speech)
         if not pref:
-            return (
+            return IntakeStepResult(
                 "Please say 1 for Voice Message, 2 for Text or SMS, or 3 for Phone Call.",
-                "delivery",
+                "sq_delivery",
+                "gather_next",
             )
         session["delivery_preference"] = pref
-        return (
-            "Now please describe your symptoms and what brought you to call today.",
-            "symptoms",
+        return IntakeStepResult(
+            "Thank you. Your information has been recorded and will be reviewed by a physician. Goodbye.",
+            "done",
+            "submit_case",
         )
 
-    return ("Please continue.", phase)
+    return IntakeStepResult(
+        "Please call back to start your intake again.",
+        "done",
+        "gather_next",
+    )
 
 
 async def claude_symptom_summary_and_fill(
@@ -229,28 +392,30 @@ async def claude_symptom_summary_and_fill(
     patient_name: str,
     patient_dob: str,
     patient_phone: str,
+    patient_age: int | None,
     delivery_preference: str,
     duration_guess: str,
     body_guess: str,
     severity: int,
+    allergies: list[str],
+    medications: list[str],
+    chief_text: str,
     api_key: str,
     model: str,
 ) -> dict[str, str]:
-    """
-    Produce 2–3 sentence clinical symptom_summary and normalize duration / body_area via Claude.
-    Returns keys: symptom_summary, duration, body_area.
-    """
     out = {
         "symptom_summary": "",
         "duration": duration_guess or "",
         "body_area": body_guess or "",
     }
+    age_s = str(patient_age) if patient_age is not None else ""
     if not api_key:
         sym = ", ".join(symptoms) if symptoms else "unspecified symptoms"
         out["symptom_summary"] = (
-            f"Patient reports {sym}. "
-            f"Duration: {duration_guess or 'unspecified'}. "
-            f"Location: {body_guess or 'unspecified'}. Severity: {severity}/10."
+            f"{chief_text or sym}. Allergies: {', '.join(allergies) or 'none reported'}. "
+            f"Meds: {', '.join(medications) or 'none reported'}. "
+            f"Duration: {duration_guess or 'unspecified'}. Body: {body_guess or 'unspecified'}. "
+            f"Pain {severity}/10. Age {age_s}."
         )
         return out
     try:
@@ -258,13 +423,16 @@ async def claude_symptom_summary_and_fill(
 
         client = anthropic.Anthropic(api_key=api_key)
         user_block = (
-            f"Symptoms: {', '.join(symptoms)}\n"
-            f"Severity (1-10): {severity}\n"
-            f"Duration (extracted): {duration_guess or 'unknown'}\n"
-            f"Body area (extracted): {body_guess or 'unknown'}\n"
-            f"Gender: {patient_gender}\nName: {patient_name}\nDOB: {patient_dob}\n"
-            f"Phone: {patient_phone}\nDelivery pref: {delivery_preference}\n\n"
-            f"Call transcript (excerpt):\n{transcript[:6000]}"
+            f"Chief concern: {chief_text}\n"
+            f"Symptoms (tags): {', '.join(symptoms)}\n"
+            f"Severity (0-10): {severity}\n"
+            f"Duration: {duration_guess or 'unknown'}\n"
+            f"Body area: {body_guess or 'unknown'}\n"
+            f"Allergies: {', '.join(allergies) or 'none'}\n"
+            f"Medications: {', '.join(medications) or 'none'}\n"
+            f"Age: {age_s} Gender: {patient_gender} DOB: {patient_dob} Phone: {patient_phone}\n"
+            f"Delivery: {delivery_preference}\n\n"
+            f"Transcript excerpt:\n{transcript[:6000]}"
         )
         r = client.messages.create(
             model=model,
@@ -272,9 +440,8 @@ async def claude_symptom_summary_and_fill(
             system=(
                 "You are a clinical documentation assistant. Return JSON only with keys:\n"
                 '  "symptom_summary": string, 2-3 sentences for a physician, no diagnosis;\n'
-                '  "duration": string, concise (e.g. "3 days", "1 week") or "" if unknown;\n'
-                '  "body_area": string, one or two words (e.g. "chest", "abdomen") or "".\n'
-                "Use the transcript to improve duration and body if the extracted values are empty."
+                '  "duration": string, concise, or "";\n'
+                '  "body_area": string, short, or "".\n'
             ),
             messages=[{"role": "user", "content": user_block}],
         )
@@ -290,10 +457,10 @@ async def claude_symptom_summary_and_fill(
     except Exception as exc:
         logger.warning("[Twilio] symptom_summary JSON failed: %s", exc)
     if not out["symptom_summary"]:
-        sym = ", ".join(symptoms) if symptoms else "unspecified symptoms"
+        sym = ", ".join(symptoms) if symptoms else chief_text or "unspecified"
         out["symptom_summary"] = (
-            f"Patient reports {sym}. "
+            f"Patient reports {sym}. Pain {severity}/10. "
             f"Duration: {out['duration'] or 'unspecified'}. "
-            f"Body area: {out['body_area'] or 'unspecified'}. Pain severity {severity}/10."
+            f"Body: {out['body_area'] or 'unspecified'}."
         )
     return out

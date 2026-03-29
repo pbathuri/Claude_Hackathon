@@ -1,19 +1,10 @@
 """
 Twilio Voice Webhook router.
-Handles inbound phone calls via Twilio, collecting symptoms through
-multi-turn voice conversation using <Gather> speech recognition.
+Handles inbound phone calls via Twilio with strict scripted intake:
+name → age → gender → DOB → phone confirm → consent → chief symptom →
+body → pain → duration → allergies → medications → delivery, then submit.
 
-Pipeline per turn:
-  1. Twilio <Gather> → speech-to-text (caller's words)
-  2. Language detection + translation to English
-  3. KG symptom extraction + navigation (activated conditions, follow-up Qs)
-  4. Claude API generates contextual response using KG context
-  5. ElevenLabs TTS converts response to natural speech audio
-  6. Twilio <Play> streams the audio back to the caller
-  7. Next <Gather> opens for the caller's reply
-
-Flow: Twilio POST /twilio/voice → verbal disclosure + first Gather
-      → POST /twilio/gather (loop) → submit case or hangup
+Emergency red-flag detection after consent can short-circuit to submit + advisory hangup.
 """
 import hashlib
 import math
@@ -28,7 +19,7 @@ import httpx
 import logging
 
 from database import get_db
-from models import CountryPermission, Case
+from models import CountryPermission, Case, Patient
 from services.country_service import (
     normalize_caller_jurisdiction,
     check_teleconsult_allowed,
@@ -54,23 +45,19 @@ from config import (
     ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL_ID,
     CONVERSATION_MODEL, CONVERSATION_MAX_TOKENS,
     INTAKE_MODEL,
-    MIN_SYMPTOMS_FOR_COMPLETE, MAX_TURNS_BEFORE_COMPLETE,
-    GRAPH_CONFIDENCE_THRESHOLD,
 )
 from services.twilio_intake_flow import (
     GATHER_TIMEOUT_SEC,
     GATHER_SPEECH_TIMEOUT,
     READY_TONE_DURATION_SEC,
-    advance_twilio_demographics,
-    extract_duration_from_speech,
+    advance_twilio_intake_step,
     extract_body_area_from_speech,
+    extract_duration_from_speech,
     claude_symptom_summary_and_fill,
+    symptoms_from_chief_text,
 )
 from routers.caller import (
     _build_verbal_disclosure,
-    _generate_fallback_message,
-    _extract_symptoms_from_text,
-    _generate_claude_response,
 )
 from services import session_store
 from services.navigator_store import get_navigator, persist_navigator, clear_navigator
@@ -275,7 +262,7 @@ async def incoming_call(
             "ai_messages": [],  # for anti-repetition
             "country_code": country_code,
             "language": "en",  # will be updated after first speech
-            "intake_phase": "gender",
+            "intake_phase": "name",
             "caller_e164": phone_info.get("e164", ""),
         },
     )
@@ -290,7 +277,7 @@ async def incoming_call(
     base_url = str(request.base_url).rstrip("/")
     welcome_text = (
         f"Welcome to the WHO Health Access Service. {shortened} "
-        "First, are you male or female? Please say male or female."
+        "Please say your full name."
     )
     welcome_play = _speak_twiml(welcome_text, voice, base_url)
     ready_play = _gather_ready_play()
@@ -318,10 +305,10 @@ async def gather_speech(
     _twilio: None = Depends(verify_twilio_webhook),
 ):
     """
-    Twilio <Gather> callback — receives transcribed speech and drives
-    the symptom-collection conversation turn by turn.
+    Twilio <Gather> callback — receives transcribed speech and advances
+    the scripted intake state machine (one question per turn).
 
-    On first turn: detects language and switches conversation accordingly.
+    On first speech: detects language and pins it for the rest of the call.
     """
     form = await request.form()
     speech_result = form.get("SpeechResult", "")
@@ -336,7 +323,6 @@ async def gather_speech(
         )
 
     turn = session["turn"]
-    collected = session["collected_symptoms"]
     country_code = session.get("country_code", "")
 
     # ── Language detection (once per call; demographics may hold turn=1 several times) ──
@@ -359,24 +345,114 @@ async def gather_speech(
 
     session["message_history"].append({"role": "user", "content": english_speech})
 
-    # ── Demographic intake (ordered) before symptom collection ──
-    _phase = session.get("intake_phase", "symptoms")
-    if _phase != "symptoms":
-        reply_en, new_phase = await advance_twilio_demographics(
+    base_url = str(request.base_url).rstrip("/")
+
+    # ── Scripted intake (single state machine; one question per Gather) ──
+    _phase = session.get("intake_phase", "name")
+    if _phase != "done":
+        prev_phase = _phase
+        result = await advance_twilio_intake_step(
             session,
             english_speech,
             anthropic_api_key=ANTHROPIC_API_KEY,
             intake_model=INTAKE_MODEL,
         )
-        session["intake_phase"] = new_phase
-        session["message_history"].append({"role": "assistant", "content": reply_en})
-        if new_phase == "symptoms":
-            session["turn"] = 1
+        session["intake_phase"] = result.next_phase
+        session["message_history"].append({"role": "assistant", "content": result.reply_en})
+        session["turn"] = turn + 1
+
+        if prev_phase == "consent" and result.next_phase == "sq_chief":
+            case_row = db.query(Case).filter_by(id=session["case_id"]).first()
+            if case_row:
+                patient = db.query(Patient).filter_by(id=case_row.patient_id).first()
+                if patient:
+                    patient.consent_given = True
+                    db.commit()
+
+        if result.action == "consent_refused":
+            case_row = db.query(Case).filter_by(id=session["case_id"]).first()
+            if case_row:
+                patient = db.query(Patient).filter_by(id=case_row.patient_id).first()
+                if patient:
+                    patient.consent_given = False
+                    db.commit()
+            session_store.twilio_session_delete(call_sid)
+            clear_navigator(session.get("case_id", ""))
+            goodbye_en = result.reply_en
+            spoken = (
+                translate_from_english(goodbye_en, user_lang) if user_lang != "en" else goodbye_en
+            )
+            safe = _escape_xml(_truncate_for_tts(spoken))
+            return _twiml(
+                f'  <Say voice="{voice}">{safe}</Say>\n'
+                "  <Hangup/>"
+            )
+
+        if session.get("intake_consent_granted") and speech_result:
+            rf_e = detect_red_flags(
+                speech_result,
+                country_code,
+                language=user_lang,
+                english_text=english_speech,
+            )
+            if rf_e.is_emergency:
+                emergency_flags = [
+                    (f.get("matched_text") or f.get("flag") or "").strip()
+                    for f in rf_e.flags
+                    if (f.get("matched_text") or f.get("flag"))
+                ]
+                try:
+                    await _submit_twilio_case(db, session)
+                except Exception as exc:
+                    logger.error("[Twilio] Emergency case submission failed: %s", exc)
+                session_store.twilio_session_delete(call_sid)
+                clear_navigator(session.get("case_id", ""))
+                emerg_msg = build_emergency_message(country_code, user_lang, emergency_flags)
+                safe_emerg = _escape_xml(_truncate_for_tts(emerg_msg))
+                return _twiml(
+                    f'  <Say voice="{voice}">{safe_emerg}</Say>\n'
+                    "  <Hangup/>"
+                )
+
+        if result.action == "submit_case":
+            submit_ok = False
+            try:
+                await _submit_twilio_case(db, session)
+                submit_ok = True
+                logger.info("[Twilio] Case %s submitted successfully", session.get("case_id"))
+            except Exception as exc:
+                logger.error("[Twilio] Case submission failed: %s", exc, exc_info=True)
+                try:
+                    from database import SessionLocal
+
+                    retry_db = SessionLocal()
+                    await _submit_twilio_case(retry_db, session)
+                    retry_db.close()
+                    submit_ok = True
+                    logger.info("[Twilio] Case %s submitted on retry", session.get("case_id"))
+                except Exception as exc2:
+                    logger.error("[Twilio] Retry also failed: %s", exc2)
+            session_store.twilio_session_delete(call_sid)
+            clear_navigator(session.get("case_id", ""))
+            done_en = result.reply_en
+            if not submit_ok:
+                done_en = (
+                    "Thank you. We had a technical issue saving your case, but please call back "
+                    "if you need help. Goodbye."
+                )
+            spoken_done = (
+                translate_from_english(done_en, user_lang) if user_lang != "en" else done_en
+            )
+            safe_done = _escape_xml(_truncate_for_tts(spoken_done))
+            return _twiml(
+                f'  <Say voice="{voice}">{safe_done}</Say>\n'
+                "  <Hangup/>"
+            )
+
         session_store.twilio_session_set(call_sid, session)
         spoken_response = (
-            translate_from_english(reply_en, user_lang) if user_lang != "en" else reply_en
+            translate_from_english(result.reply_en, user_lang) if user_lang != "en" else result.reply_en
         )
-        base_url = str(request.base_url).rstrip("/")
         resp_play = _speak_twiml(spoken_response, voice, base_url)
         listen_play = _gather_ready_play()
         no_input_msg = "I didn't catch that. Please call back when you're ready."
@@ -394,246 +470,11 @@ async def gather_speech(
             f'{noinput_play}'
         )
 
-    # ── 1. Extract symptoms (from English text) ──
-    graph = None
-    if is_knowledge_graph_enabled():
-        try:
-            from routers.knowledge_graph import get_graph
-            graph = get_graph()
-        except Exception:
-            pass
-
-    detected_symptoms: list[str] = []
-    if graph:
-        detected_symptoms = _extract_symptoms_from_text(english_speech, graph)
-
-    if not detected_symptoms:
-        _COMMON_SYMPTOMS = [
-            "fever", "headache", "cough", "nausea", "vomiting", "diarrhea",
-            "fatigue", "dizziness", "chest pain", "abdominal pain", "rash",
-            "sore throat", "body aches", "chills", "shortness of breath",
-            "back pain", "joint pain", "loss of appetite", "weight loss",
-        ]
-        text_lower = english_speech.lower()
-        detected_symptoms = [s for s in _COMMON_SYMPTOMS if s in text_lower]
-
-    # ── 2. Merge symptoms ────────────────────────────────────────────────
-    all_symptoms = list(dict.fromkeys(collected + detected_symptoms))
-    session["collected_symptoms"] = all_symptoms
-
-    # ── 3. KG navigation ─────────────────────────────────────────────────
-    suggested_questions: list[dict] = []
-    activated_conditions: list[dict] = []
-    body_systems: list[str] = []
-    graph_confidence = 0.0
-    kg_context_for_safety: dict | None = None
-
-    if graph and all_symptoms:
-        try:
-            case_id = session["case_id"]
-            nav = get_navigator(case_id, graph)
-            context = nav.process_symptoms(all_symptoms)
-            persist_navigator(case_id, nav)
-            kg_context_for_safety = context
-
-            suggested_questions = context.get("suggested_questions", [])[:3]
-            graph_confidence = context.get("graph_confidence", 0.0)
-            activated_conditions = [
-                {"name": c["condition"], "score": round(c["activation_score"], 2)}
-                for c in context.get("activated_conditions", [])[:5]
-            ]
-            body_systems = [
-                s["system"] for s in context.get("activated_body_systems", [])
-            ]
-        except Exception as exc:
-            logger.warning("[Twilio] KG navigation failed (non-blocking): %s", exc)
-
-    if not session.get("twilio_stored_duration"):
-        _d = extract_duration_from_speech(english_speech)
-        if _d:
-            session["twilio_stored_duration"] = _d
-    if not session.get("twilio_stored_body_area"):
-        _b = extract_body_area_from_speech(english_speech)
-        if _b:
-            session["twilio_stored_body_area"] = _b
-        elif body_systems:
-            session["twilio_stored_body_area"] = str(body_systems[0])[:80]
-
-    # ── 4. Layered safety engine (same path as REST /caller) ──
-    rf = detect_red_flags(
-        speech_result or "",
-        country_code,
-        language=user_lang,
-        english_text=english_speech,
-        kg_context=kg_context_for_safety,
-    )
-    # URGENT widens triage on submit; only IMMEDIATE stops the voice flow as "emergency".
-    is_emergency = rf.is_emergency
-    emergency_flags = [
-        (f.get("matched_text") or f.get("flag") or "").strip()
-        for f in rf.flags
-        if (f.get("matched_text") or f.get("flag"))
-    ]
-
-    # ── 5. Completion criteria ───────────────────────────────────────────
-    should_complete = (
-        len(all_symptoms) >= MIN_SYMPTOMS_FOR_COMPLETE
-        or graph_confidence > GRAPH_CONFIDENCE_THRESHOLD
-        or turn >= MAX_TURNS_BEFORE_COMPLETE
-        or is_emergency
-    )
-
-    # ── 6. Generate AI response (in English) ─────────────────────────────
-    ai_response = None
-    prior_history = session["message_history"][:-1]
-
-    extra_intake = ""
-    if not session.get("twilio_stored_duration"):
-        extra_intake += (
-            "\nSTILL NEED: Ask how long they have had these symptoms "
-            "(e.g. days, weeks, hours) if not already stated clearly.\n"
-        )
-    if not session.get("twilio_stored_body_area"):
-        extra_intake += (
-            "\nSTILL NEED: Ask what part of the body is affected "
-            "(chest, head, abdomen, back, etc.) if not already stated clearly.\n"
-        )
-
-    try:
-        ai_response = _generate_claude_response(
-            turn_number=turn,
-            user_message=english_speech,
-            all_symptoms=all_symptoms,
-            suggested_questions=suggested_questions,
-            activated_conditions=activated_conditions,
-            body_systems=body_systems,
-            is_emergency=is_emergency,
-            emergency_flags=emergency_flags,
-            should_complete=should_complete,
-            message_history=prior_history,
-            use_knowledge_graph=graph is not None,
-            country_code=country_code,
-            previous_ai_messages=session.get("ai_messages", []),
-            extra_intake_instructions=extra_intake,
-        )
-        logger.info(
-            "[Twilio] Claude+KG turn %s case=%s symptoms=%d graph=%s",
-            turn,
-            session.get("case_id"),
-            len(all_symptoms),
-            graph is not None,
-        )
-    except Exception as exc:
-        logger.warning("[Twilio] Claude response failed, using fallback: %s", exc)
-        ai_response = None
-
-    if ai_response is None:
-        ai_response = _generate_fallback_message(
-            turn=turn,
-            new_symptoms=detected_symptoms,
-            all_symptoms=all_symptoms,
-            suggested_questions=suggested_questions,
-            is_emergency=is_emergency,
-            emergency_flags=emergency_flags,
-            should_complete=should_complete,
-        )
-
-    # Track for anti-repetition
-    session.setdefault("ai_messages", []).append(ai_response)
-
-    # Translate response to user's language
-    spoken_response = ai_response
-    if user_lang != "en":
-        spoken_response = translate_from_english(ai_response, user_lang)
-
-    session["message_history"].append({"role": "assistant", "content": ai_response})
-    session["turn"] = turn + 1
-
-    base_url = str(request.base_url).rstrip("/")
-    resp_play = _speak_twiml(spoken_response, voice, base_url)
-
-    # ── 7. Emergency → advise caller + hangup ────────────────────────────
-    if is_emergency:
-        try:
-            await _submit_twilio_case(db, session)
-        except Exception as exc:
-            logger.error("[Twilio] Emergency case submission failed: %s", exc)
-        session_store.twilio_session_delete(call_sid)
-        clear_navigator(session.get("case_id", ""))
-
-        emerg_msg = build_emergency_message(country_code, user_lang, emergency_flags)
-        safe_emerg = _escape_xml(_truncate_for_tts(emerg_msg))
-        return _twiml(
-            f'  <Say voice="{voice}">{safe_emerg}</Say>\n'
-            "  <Hangup/>"
-        )
-
-    # ── 8. Complete → submit case + summary + hangup ─────────────────────
-    if should_complete:
-        submit_ok = False
-        try:
-            await _submit_twilio_case(db, session)
-            submit_ok = True
-            logger.info("[Twilio] Case %s submitted successfully", session.get("case_id"))
-        except Exception as exc:
-            logger.error("[Twilio] Case submission failed: %s", exc, exc_info=True)
-            # Retry once with a fresh DB session
-            try:
-                from database import SessionLocal
-                retry_db = SessionLocal()
-                await _submit_twilio_case(retry_db, session)
-                retry_db.close()
-                submit_ok = True
-                logger.info("[Twilio] Case %s submitted on retry", session.get("case_id"))
-            except Exception as exc2:
-                logger.error("[Twilio] Retry also failed: %s", exc2)
-        session_store.twilio_session_delete(call_sid)
-        clear_navigator(session.get("case_id", ""))
-
-        symptom_list = ", ".join(all_symptoms) if all_symptoms else "your symptoms"
-        if submit_ok:
-            completion_msg = (
-                f"Thank you for sharing this information. I've noted {symptom_list}. "
-                "Your case has been submitted and a physician will review it shortly. "
-                "If your condition worsens, please seek emergency care. Goodbye."
-            )
-        else:
-            completion_msg = (
-                f"Thank you. I've noted {symptom_list}. "
-                "We experienced a technical issue but your information has been recorded. "
-                "A physician will review it. If your condition worsens, seek emergency care. Goodbye."
-            )
-        if user_lang != "en":
-            completion_msg = translate_from_english(completion_msg, user_lang)
-
-        # Use <Say> for completion to avoid TTS timeout causing "application error"
-        safe_completion = _escape_xml(_truncate_for_tts(completion_msg))
-        return _twiml(
-            f'{resp_play}'
-            '  <Pause length="1"/>\n'
-            f'  <Say voice="{voice}">{safe_completion}</Say>\n'
-            "  <Hangup/>"
-        )
-
-    # ── 9. Continue → short ready tone + gather (no spoken "go ahead" prompt)
-    listen_play = _gather_ready_play()
-
-    no_input_msg = "I didn't catch that. Please call back when you're ready."
-    if user_lang != "en":
-        no_input_msg = translate_from_english(no_input_msg, user_lang)
-    noinput_play = _speak_twiml(no_input_msg, voice, base_url)
-
-    session_store.twilio_session_set(call_sid, session)
-
+    # Session should not reach here normally (done clears session on submit).
+    logger.warning("[Twilio] Gather with intake_phase=done for call %s", call_sid)
     return _twiml(
-        f'{resp_play}'
-        f'  <Gather input="speech" action="/twilio/gather" method="POST"'
-        f' timeout="{GATHER_TIMEOUT_SEC}" speechTimeout="{GATHER_SPEECH_TIMEOUT}"'
-        f' speechModel="experimental_conversations"'
-        f' language="{gather_lang}">\n'
-        f'{listen_play}'
-        "  </Gather>\n"
-        f'{noinput_play}'
+        '  <Say voice="Polly.Joanna">Your session has ended. Goodbye.</Say>\n'
+        "  <Hangup/>"
     )
 
 
@@ -644,13 +485,20 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
     import re
 
     case_id = session["case_id"]
-    symptoms = session["collected_symptoms"]
+    symptoms = list(session.get("collected_symptoms") or [])
+    chief_text = (session.get("sq_chief_text") or "").strip()
+    allergies_list = list(session.get("allergies_list") or [])
+    medications_list = list(session.get("medications_list") or [])
+    patient_age = session.get("patient_age")
     history = session["message_history"]
 
     transcript = " | ".join(f"{m['role']}: {m['content']}" for m in history)
     user_text = " ".join(m["content"] for m in history if m.get("role") == "user")
 
-    all_text = " ".join(symptoms) + " " + transcript
+    if chief_text and not symptoms:
+        symptoms = symptoms_from_chief_text(chief_text)
+
+    all_text = " ".join(symptoms) + " " + transcript + " " + chief_text
     case_row = db.query(Case).filter_by(id=case_id).first()
     cc = case_row.country_code if case_row else ""
     rf_submit = detect_red_flags(all_text, cc, english_text=all_text)
@@ -667,17 +515,18 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
     else:
         triage_level = "GREEN"
 
-    # Extract severity from user messages
-    severity = 5
-    sev_match = re.search(
-        r'(?:severity|pain|level|scale).*?(\d+)|(\d+)\s*(?:out of|/)\s*10',
-        user_text,
-        re.IGNORECASE,
-    )
-    if sev_match:
-        raw = next((g for g in sev_match.groups() if g), None)
-        if raw and 1 <= int(raw) <= 10:
-            severity = int(raw)
+    _pain = session.get("twilio_pain_score")
+    severity = int(_pain) if _pain is not None else 5
+    if _pain is None:
+        sev_match = re.search(
+            r'(?:severity|pain|level|scale).*?(\d+)|(\d+)\s*(?:out of|/)\s*10',
+            user_text,
+            re.IGNORECASE,
+        )
+        if sev_match:
+            raw = next((g for g in sev_match.groups() if g), None)
+            if raw and 0 <= int(raw) <= 10:
+                severity = int(raw)
 
     duration = session.get("twilio_stored_duration") or ""
     if not duration:
@@ -700,10 +549,14 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
         patient_name=session.get("patient_name") or "",
         patient_dob=session.get("patient_dob") or "",
         patient_phone=session.get("patient_phone") or session.get("caller_e164", ""),
+        patient_age=patient_age if isinstance(patient_age, int) else None,
         delivery_preference=session.get("delivery_preference") or "",
         duration_guess=duration,
         body_guess=body_area,
         severity=severity,
+        allergies=allergies_list,
+        medications=medications_list,
+        chief_text=chief_text,
         api_key=ANTHROPIC_API_KEY,
         model=INTAKE_MODEL,
     )
@@ -711,14 +564,15 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
     body_area = filled.get("body_area") or body_area
     symptom_summary_text = filled.get("symptom_summary") or ""
 
+    main_symptom = chief_text[:500] if chief_text else (symptoms[0] if symptoms else "")
     intake_data = {
-        "main_symptom": symptoms[0] if symptoms else "",
+        "main_symptom": main_symptom,
         "duration": duration,
         "severity": severity,
         "associated_symptoms": symptoms[1:] if len(symptoms) > 1 else [],
         "medical_history": [],
-        "current_medications": [],
-        "allergies": [],
+        "current_medications": medications_list,
+        "allergies": allergies_list,
         "triage_level": triage_level,
         "recommended_specialty": "general",
         "body_area": body_area,
@@ -731,6 +585,8 @@ async def _submit_twilio_case(db: Session, session: dict) -> None:
         "patient_phone": session.get("patient_phone") or session.get("caller_e164", ""),
         "delivery_preference": session.get("delivery_preference") or "",
     }
+    if isinstance(patient_age, int):
+        intake_data["patient_age"] = patient_age
 
     # ICD-11 mapping (non-blocking)
     try:

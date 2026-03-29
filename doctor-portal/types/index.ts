@@ -24,10 +24,11 @@ export interface Case {
   painScore: number;
   symptomDuration: string;
   bodyArea: string;
+  allergies?: string[];
+  currentMedications?: string[];
   imageUrls: string[];
   consentGiven: boolean;
   submittedAt: string;
-  aiStructuredNotes: string;
   redFlagIndicators: string[];
   priorityScore: number;
   status?: CaseStatusType;

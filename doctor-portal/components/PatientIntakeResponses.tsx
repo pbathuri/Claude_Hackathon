@@ -36,10 +36,17 @@ export default function PatientIntakeResponses({ caseData }: { caseData: Case })
         <Row label="Confirmed phone" value={caseData.patientPhone ?? ""} />
         <Row label="Result delivery preference" value={deliveryLabel(caseData.deliveryPreference)} />
         <Row label="Symptom duration" value={caseData.symptomDuration ?? ""} />
+        <Row
+          label="Allergies"
+          value={(caseData.allergies ?? []).filter(Boolean).join(", ")}
+        />
+        <Row
+          label="Current medications"
+          value={(caseData.currentMedications ?? []).filter(Boolean).join(", ")}
+        />
         <Row label="Body area affected" value={caseData.bodyArea ?? ""} />
         <Row label="Pain score" value={caseData.painScore != null ? `${caseData.painScore}/10` : ""} />
         <Row label="Symptom summary" value={caseData.symptomSummary ?? ""} />
-        <Row label="AI structured notes" value={caseData.aiStructuredNotes ?? ""} />
       </dl>
     </div>
   );

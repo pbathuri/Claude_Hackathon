@@ -27,7 +27,6 @@ import {
   Clock,
   MapPin,
   Thermometer,
-  Timer,
   FileText,
   UserPlus,
   CheckCircle,
@@ -263,7 +262,7 @@ export default function CaseDetailPage() {
               <PriorityBar score={caseData.priorityScore} showLabel={false} />
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="bg-gray-50 rounded-lg p-3">
                 <div className="flex items-center gap-1.5 mb-1">
                   <Thermometer className="w-3.5 h-3.5 text-gray-400" />
@@ -272,13 +271,6 @@ export default function CaseDetailPage() {
                 <p className={`text-xl font-heading font-bold ${painColor}`}>
                   {caseData.painScore}<span className="text-sm text-gray-400">/10</span>
                 </p>
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <div className="flex items-center gap-1.5 mb-1">
-                  <Timer className="w-3.5 h-3.5 text-gray-400" />
-                  <span className="text-[11px] font-semibold text-gray-400 uppercase">Duration</span>
-                </div>
-                <p className="text-lg font-heading font-bold text-gray-900">{caseData.symptomDuration}</p>
               </div>
               <div className="bg-gray-50 rounded-lg p-3">
                 <div className="flex items-center gap-1.5 mb-1">
@@ -311,13 +303,6 @@ export default function CaseDetailPage() {
               <RedFlagBadge flags={caseData.redFlagIndicators ?? []} />
             </div>
           )}
-
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-            <h2 className="font-heading font-semibold text-gray-900 mb-3">AI Structured Notes</h2>
-            <div className="text-sm text-gray-700 leading-relaxed bg-gray-50 rounded-lg p-4 border border-gray-100">
-              {caseData.aiStructuredNotes ?? "—"}
-            </div>
-          </div>
 
           <PatientIntakeResponses caseData={caseData} />
 
