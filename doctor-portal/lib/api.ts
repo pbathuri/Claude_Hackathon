@@ -6,6 +6,7 @@ import {
   getMockConditions,
 } from "./mock-data";
 import { portalHeaders } from "./portal-headers";
+import { mergeDoctorsForOnlinePanel } from "./doctors-online";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TIMEOUT_MS = 15000;
@@ -89,7 +90,8 @@ export function subscribeCasesStream(onEvent: () => void): () => void {
 // --- Doctors ---
 
 export async function getDoctors(): Promise<Doctor[]> {
-  return fetchWithFallback<Doctor[]>(`${API_BASE}/doctors/`, []);
+  const list = await fetchWithFallback<Doctor[]>(`${API_BASE}/doctors/`, []);
+  return mergeDoctorsForOnlinePanel(list);
 }
 
 // --- Mutations ---
@@ -164,7 +166,7 @@ const emptyHottest: HottestPath[] = [];
 
 const emptyNavigation: KGNavigationResult = {
   conditions: [],
-  recommendedSpecialty: "",
+  recommendedSpecialty: "General Medicine",
   followUpQuestions: [],
   bodySystemMapping: {},
   graphPaths: [],

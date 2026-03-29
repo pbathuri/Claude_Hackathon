@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import { Case } from "@/types";
 import { getCase, assignDoctor, formatDate, timeAgo } from "@/lib/api";
 import {
@@ -35,7 +36,12 @@ import {
 
 const URGENCY_OPTIONS: ClinicalUrgency[] = ["Low", "Medium", "High", "Critical"];
 
-export default function CaseDetailPage({ params }: { params: { id: string } }) {
+export default function CaseDetailPage() {
+  const params = useParams();
+  const caseIdParam = params?.id;
+  const caseId =
+    typeof caseIdParam === "string" ? caseIdParam : Array.isArray(caseIdParam) ? caseIdParam[0] ?? "" : "";
+
   const [caseData, setCaseData] = useState<Case | null>(null);
   const [loading, setLoading] = useState(true);
   const [assigning, setAssigning] = useState(false);
@@ -54,13 +60,30 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
   const clinicalUrgency = caseData ? displayUrgency(caseData, overlay) : "Low";
 
   useEffect(() => {
-    getCase(params.id).then((data) => {
-      setCaseData(data);
+    if (!caseId) {
+      setCaseData(null);
       setLoading(false);
-      if (data?.status === "assigned" || data?.status === "responded" || data?.status === "in_review" || data?.status === "closed")
-        setAssigned(true);
-    });
-  }, [params.id]);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    getCase(caseId)
+      .then((data) => {
+        if (cancelled) return;
+        setCaseData(data);
+        if (data?.status === "assigned" || data?.status === "responded" || data?.status === "in_review" || data?.status === "closed")
+          setAssigned(true);
+      })
+      .catch(() => {
+        if (!cancelled) setCaseData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [caseId]);
 
   useEffect(() => {
     return subscribeOverlays(refreshOverlay);
@@ -87,9 +110,9 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
     }
   };
 
-  const handleKGSpecialty = (specialty: string) => {
+  const handleKGSpecialty = useCallback((specialty: string) => {
     kgSpecialtyRef.current = specialty;
-  };
+  }, []);
 
   if (loading) return <LoadingSpinner text="Loading case details..." />;
 
@@ -276,19 +299,21 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
             <p className="text-sm text-gray-700 leading-relaxed bg-blue-50/50 border border-blue-100/50 rounded-lg p-4">{caseData.symptomSummary}</p>
           </div>
 
-          {caseData.redFlagIndicators.length > 0 && (
+          {(caseData.redFlagIndicators?.length ?? 0) > 0 && (
             <div className="bg-white rounded-xl border border-red-100 shadow-sm p-6">
               <h2 className="font-heading font-semibold text-triage-red mb-3 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-triage-red animate-pulse" />
                 Red Flag Indicators
               </h2>
-              <RedFlagBadge flags={caseData.redFlagIndicators} />
+              <RedFlagBadge flags={caseData.redFlagIndicators ?? []} />
             </div>
           )}
 
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
             <h2 className="font-heading font-semibold text-gray-900 mb-3">AI Structured Notes</h2>
-            <div className="text-sm text-gray-700 leading-relaxed bg-gray-50 rounded-lg p-4 border border-gray-100">{caseData.aiStructuredNotes}</div>
+            <div className="text-sm text-gray-700 leading-relaxed bg-gray-50 rounded-lg p-4 border border-gray-100">
+              {caseData.aiStructuredNotes ?? "—"}
+            </div>
           </div>
 
           <MedicalReportSection

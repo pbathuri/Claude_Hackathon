@@ -13,7 +13,6 @@ import CountryIndicator from "@/components/CountryIndicator";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { FileText, AlertTriangle, CalendarClock, Gauge, Clock } from "lucide-react";
 import { getCurrentProfile } from "@/lib/auth-storage";
-import { mergeDoctorsForOnlinePanel } from "@/lib/doctors-online";
 import DoctorsOnlinePanel, { DoctorsOnlineFloating } from "@/components/DoctorsOnlinePanel";
 
 const POLL_FALLBACK_MS = 60_000;
@@ -78,7 +77,7 @@ export default function DashboardPage() {
     .slice(0, 5);
 
   const profile = getCurrentProfile();
-  const doctorsForPanel = mergeDoctorsForOnlinePanel(doctors);
+  const doctorsForPanel = doctors;
 
   return (
     <div className="space-y-6">

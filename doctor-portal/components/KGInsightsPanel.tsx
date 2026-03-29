@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Case, KGNavigationResult } from "@/types";
 import { navigateKG } from "@/lib/api";
 import MiniGraph from "./MiniGraph";
@@ -28,25 +28,51 @@ function hasData(insights?: KGNavigationResult): boolean {
   );
 }
 
+const FALLBACK_KG: KGNavigationResult = {
+  conditions: [],
+  recommendedSpecialty: "General Medicine",
+  followUpQuestions: [],
+  bodySystemMapping: {},
+  graphPaths: [],
+};
+
 export default function KGInsightsPanel({ caseData, kgInsights, onSpecialtyResolved }: Props) {
   const [result, setResult] = useState<KGNavigationResult | null>(null);
   const [loading, setLoading] = useState(true);
+  const onSpecialtyRef = useRef(onSpecialtyResolved);
+  onSpecialtyRef.current = onSpecialtyResolved;
 
   useEffect(() => {
+    let cancelled = false;
+
     if (hasData(kgInsights)) {
       setResult(kgInsights!);
       setLoading(false);
-      onSpecialtyResolved?.(kgInsights!.recommendedSpecialty);
+      onSpecialtyRef.current?.(kgInsights!.recommendedSpecialty ?? "General Medicine");
       return;
     }
 
-    const symptoms = parseSymptoms(caseData.symptomSummary);
-    navigateKG(symptoms).then((data) => {
-      setResult(data);
-      setLoading(false);
-      onSpecialtyResolved?.(data.recommendedSpecialty);
-    });
-  }, [caseData.symptomSummary, kgInsights, onSpecialtyResolved]);
+    setLoading(true);
+    const symptoms = parseSymptoms(caseData?.symptomSummary ?? "");
+
+    navigateKG(symptoms)
+      .then((data) => {
+        if (cancelled) return;
+        setResult(data);
+        setLoading(false);
+        onSpecialtyRef.current?.(data.recommendedSpecialty ?? "General Medicine");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setResult(FALLBACK_KG);
+        setLoading(false);
+        onSpecialtyRef.current?.("General Medicine");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [caseData?.symptomSummary, kgInsights]);
 
   if (loading) {
     return (
@@ -77,7 +103,7 @@ export default function KGInsightsPanel({ caseData, kgInsights, onSpecialtyResol
             Suggested Conditions
           </h3>
           <div className="space-y-2">
-            {result.conditions.map((c, i) => (
+            {(result.conditions ?? []).map((c, i) => (
               <div
                 key={i}
                 className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2.5"
@@ -122,7 +148,7 @@ export default function KGInsightsPanel({ caseData, kgInsights, onSpecialtyResol
             Follow-up Questions
           </h3>
           <ul className="space-y-1.5">
-            {result.followUpQuestions.map((q, i) => (
+            {(result.followUpQuestions ?? []).map((q, i) => (
               <li
                 key={i}
                 className="text-sm text-gray-600 bg-amber-50/60 rounded-lg px-3 py-2 border border-amber-100/60"
@@ -140,13 +166,13 @@ export default function KGInsightsPanel({ caseData, kgInsights, onSpecialtyResol
             Body System Mapping
           </h3>
           <div className="space-y-2">
-            {Object.entries(result.bodySystemMapping).map(([system, symptoms]) => (
+            {Object.entries(result.bodySystemMapping ?? {}).map(([system, symptomList]) => (
               <div key={system} className="flex items-start gap-2">
                 <span className="text-[11px] font-semibold bg-gray-100 text-gray-700 px-2 py-0.5 rounded shrink-0 mt-0.5">
                   {system}
                 </span>
                 <div className="flex flex-wrap gap-1">
-                  {symptoms.map((s, i) => (
+                  {(Array.isArray(symptomList) ? symptomList : []).map((s, i) => (
                     <span key={i} className="text-[11px] text-gray-500 bg-gray-50 border border-gray-100 px-2 py-0.5 rounded">
                       {s}
                     </span>
@@ -163,7 +189,7 @@ export default function KGInsightsPanel({ caseData, kgInsights, onSpecialtyResol
             Graph Pathway
           </h3>
           <div className="bg-gray-50/70 rounded-lg p-3 border border-gray-100">
-            <MiniGraph paths={result.graphPaths} />
+            <MiniGraph paths={result.graphPaths ?? []} />
             <div className="flex items-center justify-center gap-4 mt-3 pt-3 border-t border-gray-200">
               <div className="flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-full bg-triage-red" />

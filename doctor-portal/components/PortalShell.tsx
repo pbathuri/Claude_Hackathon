@@ -1,19 +1,27 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { ensureDemoDoctorSeeded, isLoggedIn } from "@/lib/auth-storage";
+
+const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 export default function PortalShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [checked, setChecked] = useState(false);
 
-  useEffect(() => {
-    ensureDemoDoctorSeeded();
-    setChecked(true);
+  /* Run before paint so we don't stick on "Loading portal..." if effects are delayed; always flip checked */
+  useIsomorphicLayoutEffect(() => {
+    try {
+      ensureDemoDoctorSeeded();
+    } catch {
+      /* localStorage blocked / quota — still allow auth check */
+    } finally {
+      setChecked(true);
+    }
   }, []);
 
   useEffect(() => {
