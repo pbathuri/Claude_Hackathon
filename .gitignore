@@ -50,3 +50,6 @@ backend/data/viz/
 
 # Logs
 *.log
+
+# Local-only full-tree exports per branch (regenerate: scripts/export-github-branches.sh)
+branch_exports/
