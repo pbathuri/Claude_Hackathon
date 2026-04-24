@@ -1,0 +1,23 @@
+README.md
+  020c45006148b834 1,3,5,7,9-13,15,17,19,21,23-28,30,32,34-45,48,50,52,54-63,65,67-71,73,75,77,80-104,107-114,117,119,122,124-126,128-129,132,134,136,138-141,143,145,147-150,152,154-156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "844d528720fa64e55bd52143e00da9cb0b6648a9",
+  "prompts": {
+    "020c45006148b834": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d1b00e4-af54-4d5c-92ca-4f2284b6d802",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "pbathuri",
+      "messages": [],
+      "total_additions": 112,
+      "total_deletions": 376,
+      "accepted_lines": 112,
+      "overriden_lines": 0
+    }
+  }
+}
