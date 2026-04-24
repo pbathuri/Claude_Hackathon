@@ -1,4 +1,4 @@
-# Phase 07 — Testing & Validation
+# Phase 07 - Testing & Validation
 
 ## Objective
 
@@ -35,7 +35,7 @@ backend/tests/
 
 | File | What It Covers |
 |------|----------------|
-| `test_api_contracts.py` | Response shape validation for `/cases/patient-cases`, `/kg/stats`, `/kg/query`, and `/doctors/` — ensures the backend API matches what `doctor-portal` expects |
+| `test_api_contracts.py` | Response shape validation for `/cases/patient-cases`, `/kg/stats`, `/kg/query`, and `/doctors/` - ensures the backend API matches what `doctor-portal` expects |
 
 ### Fixtures
 
@@ -62,4 +62,4 @@ python -m pytest tests/ -v
 - **Zero false negatives** on safety-critical red-flag detection
 - **Contract tests skip gracefully** when the backend is not running (`self.skipTest`)
 - **Golden fixtures** provide deterministic regression baselines independent of LLM variability
-- **No external dependencies** for unit tests — all run against pure domain logic
+- **No external dependencies** for unit tests - all run against pure domain logic

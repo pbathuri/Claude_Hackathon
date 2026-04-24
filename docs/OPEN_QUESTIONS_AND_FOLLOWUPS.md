@@ -2,12 +2,12 @@
 
 ## Production Readiness
 
-1. PostgreSQL migration with Alembic — required before multi-instance deployment
-2. Redis for session state — in-memory sessions lost on restart
-3. Real SMS delivery — follow-up "sent" is currently a stub
-4. Twilio request signature validation — webhook forgery protection
-5. Image upload binding to cases with tokens — orphan file prevention
-6. Doctor identity verification workflow — KYC integration needed
+1. PostgreSQL migration with Alembic - required before multi-instance deployment
+2. Redis for session state - in-memory sessions lost on restart
+3. Real SMS delivery - follow-up "sent" is currently a stub
+4. Twilio request signature validation - webhook forgery protection
+5. Image upload binding to cases with tokens - orphan file prevention
+6. Doctor identity verification workflow - KYC integration needed
 
 ## Clinical Validation
 
@@ -18,7 +18,7 @@
 
 ## Regulatory
 
-1. FDA CDS software classification — is this non-device CDS per 520(o)(1)(E)?
+1. FDA CDS software classification - is this non-device CDS per 520(o)(1)(E)?
 2. Country-specific data protection compliance (NDPA Nigeria, DPDP India, DPA Kenya)
 3. WHO SMART Guidelines alignment audit for intake pathways
 4. HIPAA applicability if US patients are served

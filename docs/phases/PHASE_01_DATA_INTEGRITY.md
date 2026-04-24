@@ -1,4 +1,4 @@
-# Phase 01 — Data Integrity
+# Phase 01 - Data Integrity
 
 ## Objective
 
@@ -17,7 +17,7 @@ Ensure every piece of clinical data flowing through the platform is typed, valid
 
 ## Key Decisions
 
-1. **str-Enums** — All enums inherit `(str, Enum)` so they serialize cleanly in JSON/Pydantic without custom encoders while still being type-checkable.
-2. **ExtractedFact provenance** — Every clinical fact carries `provenance` and `confidence` so downstream consumers (doctors, auditors) know whether a value was patient-reported, AI-extracted, or clinician-authored.
-3. **Consent as first-class records** — `ConsentEventRecord` is a separate table (not a boolean flag on Patient) to support multi-version consent, per-channel tracking, and GDPR/data-law audit trails.
-4. **Outbox pattern** — `OutboxJob` enables reliable async work (notifications, follow-ups) without losing tasks on crashes; retry semantics are built into the schema.
+1. **str-Enums** - All enums inherit `(str, Enum)` so they serialize cleanly in JSON/Pydantic without custom encoders while still being type-checkable.
+2. **ExtractedFact provenance** - Every clinical fact carries `provenance` and `confidence` so downstream consumers (doctors, auditors) know whether a value was patient-reported, AI-extracted, or clinician-authored.
+3. **Consent as first-class records** - `ConsentEventRecord` is a separate table (not a boolean flag on Patient) to support multi-version consent, per-channel tracking, and GDPR/data-law audit trails.
+4. **Outbox pattern** - `OutboxJob` enables reliable async work (notifications, follow-ups) without losing tasks on crashes; retry semantics are built into the schema.

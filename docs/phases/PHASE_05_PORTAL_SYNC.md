@@ -1,11 +1,11 @@
-# Phase 05 — Portal Sync
+# Phase 05 - Portal Sync
 
 ## Objective
 Fix type mismatches between backend and doctor portal, add demo mode awareness, and align case status enums to the full lifecycle.
 
 ## Files Changed
-- `doctor-portal/types/index.ts` — type definitions
-- `doctor-portal/lib/api.ts` — API client with fallback logic
+- `doctor-portal/types/index.ts` - type definitions
+- `doctor-portal/lib/api.ts` - API client with fallback logic
 
 ## Contract Changes
 

@@ -1,6 +1,6 @@
 # Integration Guide: caller-api <-> backend
 
-The backend is running at `http://localhost:8000`. Your caller-api talks to it via 4 HTTP calls — 3 required, 1 optional. Below is exactly where each call goes in your existing code, with copy-paste snippets.
+The backend is running at `http://localhost:8000`. Your caller-api talks to it via 4 HTTP calls - 3 required, 1 optional. Below is exactly where each call goes in your existing code, with copy-paste snippets.
 
 ---
 
@@ -23,7 +23,7 @@ The backend is running at `http://localhost:8000`. Your caller-api talks to it v
 
 ## What to add, file by file
 
-### 1. `src/config.py` — add the backend URL
+### 1. `src/config.py` - add the backend URL
 
 Add this field inside your `Configuration` class (after `piper_voice`, around line 73):
 
@@ -37,7 +37,7 @@ backend_url: str = Field(
 
 ---
 
-### 2. `src/main.py` — the three integration points
+### 2. `src/main.py` - the three integration points
 
 Your `/chat` endpoint needs changes in three places. Here's the exact location for each.
 
@@ -59,12 +59,12 @@ async def chat(
     text:            Optional[str]        = Form(default=None),
     symptoms:        str                  = Form(default="[]"),
     message_history: str                  = Form(default="[]"),
-    phone_number:    Optional[str]        = Form(default=None),   # NEW — pass on first turn
-    case_id:         Optional[str]        = Form(default=None),   # NEW — pass on every turn after first
+    phone_number:    Optional[str]        = Form(default=None),   # NEW - pass on first turn
+    case_id:         Optional[str]        = Form(default=None),   # NEW - pass on every turn after first
 ):
 ```
 
-#### 2c. Before the graph runs (line 136, after `initial_state` is built) — start session on first turn
+#### 2c. Before the graph runs (line 136, after `initial_state` is built) - start session on first turn
 
 This is where you call the backend to register the caller. Insert this block right after line 144 (`"conversation_complete": False,`) and before the `# ── Run graph` comment on line 146:
 
@@ -74,7 +74,7 @@ This is where you call the backend to register the caller. Insert this block rig
     backend = cfg.backend_url
 
     if phone_number and not case_id:
-        # First turn — register with backend, get country/tier/disclaimer
+        # First turn - register with backend, get country/tier/disclaimer
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(f"{backend}/caller/session/start", json={
                 "phone_number": phone_number,
@@ -100,7 +100,7 @@ This is where you call the backend to register the caller. Insert this block rig
             logger.info("[Backend] Session started | case_id=%s | country=%s | tier=%d",
                         case_id, session_data.get("country_name"), session_data.get("country_tier"))
         elif r.status_code == 403:
-            # Country not supported — tell caller and hang up
+            # Country not supported - tell caller and hang up
             error_data = r.json().get("detail", {})
             return JSONResponse(content={
                 "transcript": None,
@@ -114,7 +114,7 @@ This is where you call the backend to register the caller. Insert this block rig
             })
 ```
 
-#### 2d. After the graph runs and `conversation_complete=true` (line 175, after `response_body` is built) — submit to backend
+#### 2d. After the graph runs and `conversation_complete=true` (line 175, after `response_body` is built) - submit to backend
 
 Insert this block right after line 183 (`"turns": len(history),`) and before the final `logger.info` on line 185:
 
@@ -150,11 +150,11 @@ Insert this block right after line 183 (`"turns": len(history),`) and before the
 
 ---
 
-### 3. `src/graph.py` — optional: add emergency check after STT
+### 3. `src/graph.py` - optional: add emergency check after STT
 
 This is optional but valuable. After Whisper transcribes audio, check for emergency keywords before the LLM even runs. If the caller says "chest pain" or "can't breathe", you can short-circuit immediately.
 
-In `speech_to_text` (around line 134, after `return {"transcript": transcript, "audio_input": None}`), you could add an emergency-check node. But the simpler approach is to do it in `main.py` after the graph returns — the backend `/caller/emergency-check` endpoint is fast enough.
+In `speech_to_text` (around line 134, after `return {"transcript": transcript, "audio_input": None}`), you could add an emergency-check node. But the simpler approach is to do it in `main.py` after the graph returns - the backend `/caller/emergency-check` endpoint is fast enough.
 
 If you want it mid-graph, add this as a new node between `speech_to_text` and `human_interaction`:
 
@@ -165,7 +165,7 @@ async def emergency_check(state: MainState, config: RunnableConfig) -> dict:
     if not transcript:
         return {}
 
-    # This list matches the backend — keep in sync
+    # This list matches the backend - keep in sync
     EMERGENCY_KEYWORDS = [
         "chest pain", "chest tightness", "can't breathe", "cannot breathe",
         "difficulty breathing", "shortness of breath", "stroke",
@@ -202,7 +202,7 @@ g.add_edge("emergency_check", "human_interaction")
 
 ---
 
-### 4. `src/prompts.py` — update system prompt with safety rules
+### 4. `src/prompts.py` - update system prompt with safety rules
 
 Your current `human_interaction_prompt` system message (line 9) is generic. Update it to include the safety rules that the backend enforces, so the LLM and backend stay aligned:
 
@@ -267,18 +267,18 @@ Later (patient wants to check status):
 
 ## What you do NOT need to build
 
-- Triage logic — backend handles it
-- ICD-11 code mapping — backend handles it
-- Priority scoring — backend handles it
-- Country detection — backend does it from the phone number
-- Disclaimer/disclosure text — backend generates the exact verbal script per SDD Section 6.4.1
-- Case lifecycle — backend manages open -> pending -> assigned -> resolved -> closed
+- Triage logic - backend handles it
+- ICD-11 code mapping - backend handles it
+- Priority scoring - backend handles it
+- Country detection - backend does it from the phone number
+- Disclaimer/disclosure text - backend generates the exact verbal script per SDD Section 6.4.1
+- Case lifecycle - backend manages open -> pending -> assigned -> resolved -> closed
 
 ---
 
 ## How to test without the backend running
 
-Your code works standalone today — nothing breaks if the backend is down. The `httpx` calls in `main.py` are wrapped in try/except. If the backend is unreachable, the conversation still runs, symptoms still get collected, the user still hears responses — it just doesn't create a case in the system.
+Your code works standalone today - nothing breaks if the backend is down. The `httpx` calls in `main.py` are wrapped in try/except. If the backend is unreachable, the conversation still runs, symptoms still get collected, the user still hears responses - it just doesn't create a case in the system.
 
 ## How to test with the backend running
 

@@ -1,4 +1,4 @@
-# WHO Health Access — Complete Technical Guide
+# WHO Health Access - Complete Technical Guide
 
 > **Single Source of Truth** for the WHO-Aligned AI Telehealth Platform.
 > Last updated: March 29, 2026
@@ -260,24 +260,24 @@ Claude_Hackathon/
 **File**: `backend/main.py`
 
 On startup (`lifespan`):
-1. `init_db()` — creates tables (SQLite) or expects Alembic (PostgreSQL)
-2. `seed_country_permissions(db)` — inserts country permission matrix (NG, IN, PH, KE, ZZ)
-3. `start_scheduler()` — APScheduler for case expiration, follow-ups, data purge
-4. `init_knowledge_graph()` — builds medical KG from seed data, loads persisted graph
+1. `init_db()` - creates tables (SQLite) or expects Alembic (PostgreSQL)
+2. `seed_country_permissions(db)` - inserts country permission matrix (NG, IN, PH, KE, ZZ)
+3. `start_scheduler()` - APScheduler for case expiration, follow-ups, data purge
+4. `init_knowledge_graph()` - builds medical KG from seed data, loads persisted graph
 
 Registered routers:
-- `/intake` — direct structured intake
-- `/cases` — case CRUD, queue, SSE, FHIR export
-- `/doctors` — doctor profiles
-- `/health` — WHO GHO data
-- `/caller` — web caller API (session, ai-turn, submit, STT, TTS)
-- `/kg` — knowledge graph navigation, backprop, stats
-- `/twilio` — Twilio voice webhooks
+- `/intake` - direct structured intake
+- `/cases` - case CRUD, queue, SSE, FHIR export
+- `/doctors` - doctor profiles
+- `/health` - WHO GHO data
+- `/caller` - web caller API (session, ai-turn, submit, STT, TTS)
+- `/kg` - knowledge graph navigation, backprop, stats
+- `/twilio` - Twilio voice webhooks
 
 Special routes:
-- `GET /` — service info
-- `GET /call` — redirects to `static/caller.html`
-- `GET /health-check` — liveness probe with dependency status
+- `GET /` - service info
+- `GET /call` - redirects to `static/caller.html`
+- `GET /health-check` - liveness probe with dependency status
 
 ### 4.2 Configuration
 
@@ -323,10 +323,10 @@ Every configurable value is loaded from environment variables with sensible defa
 | `ImageUpload` | `image_uploads` | `case_id`, `file_path`, `content_type` | Patient image uploads |
 
 Extended models (`domain/models_ext.py`):
-- `ConversationTurnRecord` — per-turn transcript with language metadata
-- `ConsentEventRecord` — consent audit events
-- `ClinicalExtractionRecord` — structured extraction per case
-- `OutboxJob` — async job queue for background work
+- `ConversationTurnRecord` - per-turn transcript with language metadata
+- `ConsentEventRecord` - consent audit events
+- `ClinicalExtractionRecord` - structured extraction per case
+- `OutboxJob` - async job queue for background work
 
 **Case Status State Machine** (from `models.py`):
 ```
@@ -337,7 +337,7 @@ open → intake_complete → pending → assigned → in_progress → resolved �
 
 ### 4.4 Routers (API Endpoints)
 
-#### 4.4.1 Caller API — `routers/caller.py` (prefix: `/caller`)
+#### 4.4.1 Caller API - `routers/caller.py` (prefix: `/caller`)
 
 This is the primary integration surface for the web caller.
 
@@ -347,14 +347,14 @@ This is the primary integration surface for the web caller.
 | `POST` | `/caller/session/consent` | Record patient consent for capability disclaimer | `{case_id, consent_given}` | `{status, consent_timestamp}` |
 | `POST` | `/caller/ai-turn` | Process one conversation turn (the core loop) | `{case_id, user_message, turn_number, collected_symptoms, message_history, language}` | `{ai_message, detected_symptoms, all_symptoms_so_far, is_emergency, should_complete, ...}` |
 | `POST` | `/caller/session/submit` | Submit completed conversation for triage + ICD-11 + doctor queue | `{case_id, symptoms, message_history, transcript_summary, severity, duration, ...}` | `{case_id, triage_level, priority_score, icd11_codes, ...}` |
-| `GET` | `/caller/session/{case_id}` | Check case status + doctor response | — | Full case data with doctor response if available |
-| `GET` | `/caller/disclosure/{cc}` | Get verbal disclosure script for a country | — | `{verbal_disclosure_script, physician_status_bar, capability_card}` |
+| `GET` | `/caller/session/{case_id}` | Check case status + doctor response | - | Full case data with doctor response if available |
+| `GET` | `/caller/disclosure/{cc}` | Get verbal disclosure script for a country | - | `{verbal_disclosure_script, physician_status_bar, capability_card}` |
 | `POST` | `/caller/emergency-check` | Quick emergency keyword check | `{text}` | `{is_emergency, red_flags, action}` |
 | `POST` | `/caller/stt` | OpenAI Whisper STT (multipart audio upload) | `file` (audio), `language` (optional) | `{text, language}` |
 | `POST` | `/caller/tts` | ElevenLabs TTS | `{text}` | Audio stream (audio/mpeg) |
 | `POST` | `/caller/browser-stt/push` | Persist browser Web Speech segment | `{case_id, text, is_final, lang}` | `{segment_count, full_text}` |
-| `GET` | `/caller/browser-stt/{case_id}` | Get merged browser STT transcript | — | `{segments, full_text}` |
-| `DELETE` | `/caller/browser-stt/{case_id}` | Clear STT segments after submit | — | `{status}` |
+| `GET` | `/caller/browser-stt/{case_id}` | Get merged browser STT transcript | - | `{segments, full_text}` |
+| `DELETE` | `/caller/browser-stt/{case_id}` | Clear STT segments after submit | - | `{status}` |
 | `POST` | `/caller/upload-image` | Upload patient image | `file` (image) | `{url, filename}` |
 
 **`/caller/ai-turn` is the most important endpoint.** Its internal pipeline:
@@ -371,37 +371,37 @@ This is the primary integration surface for the web caller.
 11. Translate response back to user's language
 12. Generate clinical summary on completion
 
-#### 4.4.2 Twilio Voice — `routers/twilio_voice.py` (prefix: `/twilio`)
+#### 4.4.2 Twilio Voice - `routers/twilio_voice.py` (prefix: `/twilio`)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/twilio/voice` | Incoming call webhook — creates case, plays disclosure, opens first Gather |
-| `POST` | `/twilio/gather` | Speech result callback — runs same pipeline as `/caller/ai-turn` |
+| `POST` | `/twilio/voice` | Incoming call webhook - creates case, plays disclosure, opens first Gather |
+| `POST` | `/twilio/gather` | Speech result callback - runs same pipeline as `/caller/ai-turn` |
 | `GET` | `/twilio/tts-audio` | ElevenLabs audio for Twilio `<Play>` (with Redis cache) |
 | `GET` | `/twilio/ready-tone` | Short sine wave "ready" tone WAV for `<Gather>` |
 
 The Twilio path uses TwiML XML responses (`<Gather>`, `<Play>`, `<Say>`, `<Hangup>`). After each turn, the AI response is spoken via ElevenLabs `<Play>` URL, followed by a ready tone inside the next `<Gather>`.
 
-#### 4.4.3 Cases — `routers/cases.py` (prefix: `/cases`)
+#### 4.4.3 Cases - `routers/cases.py` (prefix: `/cases`)
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/cases/` | List cases (filterable by status, country, triage) |
 | `GET` | `/cases/queue` | Priority queue snapshot |
-| `GET` | `/cases/patient-cases` | **Doctor portal endpoint** — all cases in frontend shape |
-| `GET` | `/cases/patient-cases/{id}` | **Doctor portal endpoint** — single case detail |
-| `GET` | `/cases/stream` | **SSE** — real-time pending case counts |
+| `GET` | `/cases/patient-cases` | **Doctor portal endpoint** - all cases in frontend shape |
+| `GET` | `/cases/patient-cases/{id}` | **Doctor portal endpoint** - single case detail |
+| `GET` | `/cases/stream` | **SSE** - real-time pending case counts |
 | `GET` | `/cases/{id}` | Internal case detail |
 | `POST` | `/cases/{id}/assign` | Assign doctor to case |
 | `POST` | `/cases/{id}/start` | Doctor starts working on case |
-| `POST` | `/cases/{id}/respond` | **Doctor submits guidance** — resolves case, schedules follow-ups |
+| `POST` | `/cases/{id}/respond` | **Doctor submits guidance** - resolves case, schedules follow-ups |
 | `POST` | `/cases/{id}/escalate` | Manual escalation to RED |
 | `POST` | `/cases/{id}/close` | Close resolved case |
 | `POST` | `/cases/{id}/followup-reply` | Patient follow-up reply (1=better, 2=same, 3=worse) |
 | `GET` | `/cases/{id}/audit` | Audit trail for case |
 | `GET` | `/cases/{id}/fhir` | FHIR R4 Bundle export |
 
-#### 4.4.4 Knowledge Graph — `routers/knowledge_graph.py` (prefix: `/kg`)
+#### 4.4.4 Knowledge Graph - `routers/knowledge_graph.py` (prefix: `/kg`)
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -419,23 +419,23 @@ The Twilio path uses TwiML XML responses (`<Gather>`, `<Play>`, `<Say>`, `<Hangu
 
 #### 4.4.5 Other Routers
 
-- `/doctors/` — CRUD for doctor profiles
-- `/health/` — WHO GHO health indicators by country
-- `/intake/` — Direct structured intake (bypasses conversation)
+- `/doctors/` - CRUD for doctor profiles
+- `/health/` - WHO GHO health indicators by country
+- `/intake/` - Direct structured intake (bypasses conversation)
 
 ### 4.5 Services
 
-#### `case_service.py` — Case Lifecycle
+#### `case_service.py` - Case Lifecycle
 
 The heart of the data pipeline. Key functions:
 
-- `create_case(db, patient_id, country_code)` — creates case in `open` status with patient alias
-- `complete_intake(db, case_id, intake_data, icd11_codes)` — normalizes intake, computes triage, sets priority score, creates SymptomRecord
-- `move_to_pending(db, case_id)` — transitions to `pending` (ready for doctor)
-- `assign_case(db, case_id, doctor_id)` — assigns doctor
-- `submit_response(db, case_id, doctor_id, guidance_text, ...)` — resolves case, creates DoctorResponse
-- `schedule_followup(db, case_id, hours)` — creates FollowUpSchedule
-- `get_case_for_frontend(db, case_id)` — **maps DB case to doctor portal JSON shape**
+- `create_case(db, patient_id, country_code)` - creates case in `open` status with patient alias
+- `complete_intake(db, case_id, intake_data, icd11_codes)` - normalizes intake, computes triage, sets priority score, creates SymptomRecord
+- `move_to_pending(db, case_id)` - transitions to `pending` (ready for doctor)
+- `assign_case(db, case_id, doctor_id)` - assigns doctor
+- `submit_response(db, case_id, doctor_id, guidance_text, ...)` - resolves case, creates DoctorResponse
+- `schedule_followup(db, case_id, hours)` - creates FollowUpSchedule
+- `get_case_for_frontend(db, case_id)` - **maps DB case to doctor portal JSON shape**
 
 The frontend contract shape (returned by `get_case_for_frontend`):
 ```json
@@ -463,7 +463,7 @@ The frontend contract shape (returned by `get_case_for_frontend`):
 }
 ```
 
-#### `country_service.py` — Country Detection
+#### `country_service.py` - Country Detection
 
 Uses the `phonenumbers` library to parse E.164 phone numbers and detect country codes. Maps to the `CountryPermission` matrix.
 
@@ -473,7 +473,7 @@ Seeded countries with tiers:
 - **Tier 3** (PH - Philippines, KE - Kenya): Diagnosis; treatment managed locally
 - **Tier 4** (ZZ - Unknown): Guidance only
 
-#### `language_service.py` — Multilingual System
+#### `language_service.py` - Multilingual System
 
 Supports 12 languages: English, Spanish, French, Hindi, Portuguese, Arabic, Swahili, Yoruba, Hausa, Chinese, German, Filipino.
 
@@ -491,7 +491,7 @@ Each language has metadata:
 - `greeting`: Localized greeting text
 - `emergency_notice`: Localized emergency message
 
-#### `triage_service.py` — Triage and Scoring
+#### `triage_service.py` - Triage and Scoring
 
 Implements START protocol-inspired triage:
 
@@ -506,7 +506,7 @@ Implements START protocol-inspired triage:
 - KG confidence: `confidence * 10`
 - Country tier: {1:10, 2:20, 3:30, 4:40}
 
-#### `session_store.py` — Redis Session Management
+#### `session_store.py` - Redis Session Management
 
 Redis-backed with in-memory fallback for local dev. Stores:
 - Twilio call sessions (case_id, turn, symptoms, message_history, language)
@@ -516,14 +516,14 @@ Redis-backed with in-memory fallback for local dev. Stores:
 - TTS audio cache (keyed by text hash)
 - KG navigator snapshots
 
-#### `explainability.py` — Doctor-Facing Explainability
+#### `explainability.py` - Doctor-Facing Explainability
 
 Builds 5 layers for each case:
-1. **Language Banner** — detected language, translation confidence, interpreter recommendation
-2. **Patient Evidence** — original patient utterances with translations
-3. **Extraction Layer** — structured facts with source attribution (patient-reported, AI-extracted, KG-inferred)
-4. **Safety Layer** — triage triggers, red flags, KG confidence
-5. **Ambiguity Block** — unresolved items, translation artifacts
+1. **Language Banner** - detected language, translation confidence, interpreter recommendation
+2. **Patient Evidence** - original patient utterances with translations
+3. **Extraction Layer** - structured facts with source attribution (patient-reported, AI-extracted, KG-inferred)
+4. **Safety Layer** - triage triggers, red flags, KG confidence
+5. **Ambiguity Block** - unresolved items, translation artifacts
 
 ### 4.6 Knowledge Graph
 
@@ -534,9 +534,9 @@ Builds 5 layers for each case:
 **Edge types**: PRESENTS_WITH, INDICATES, LOCATED_IN, TREATED_BY, RISK_FOR, MANAGED_WITH, FOLLOW_UP, CONTRAINDICATES, DEMOGRAPHIC_RISK
 
 **Key classes**:
-- `MedicalKnowledgeGraph` — the graph structure with nodes, edges, adjacency lists, Physarum flow mechanics
-- `ConversationNavigator` — per-conversation state machine that activates symptoms, spreads activation, ranks follow-up questions via chemotaxis scoring, surfaces likely conditions
-- `GraphBackpropagator` — updates graph weights based on doctor feedback (confirmed diagnosis reinforces paths)
+- `MedicalKnowledgeGraph` - the graph structure with nodes, edges, adjacency lists, Physarum flow mechanics
+- `ConversationNavigator` - per-conversation state machine that activates symptoms, spreads activation, ranks follow-up questions via chemotaxis scoring, surfaces likely conditions
+- `GraphBackpropagator` - updates graph weights based on doctor feedback (confirmed diagnosis reinforces paths)
 
 **Learning loop**: When a doctor confirms a diagnosis and submits a response, `backpropagate` reinforces the edges from the patient's symptoms to the confirmed condition, and the condition to the doctor's specialty. Over time, the graph learns which symptom patterns lead to which diagnoses.
 
@@ -546,16 +546,16 @@ Builds 5 layers for each case:
 
 4-tier layered detection:
 
-1. **Tier 1 — Exact Keywords (IMMEDIATE)**: "chest pain", "can't breathe", "suicidal thoughts", "stroke symptoms", "severe bleeding", "anaphylaxis" → triggers emergency, stops conversation
-2. **Tier 2 — English Regex Patterns**: Compiled regex with word boundaries for nuanced matching (e.g., "seizure" but not "anti-seizure medication")
-3. **Tier 3 — Multilingual Patterns**: Language-specific emergency phrases in Spanish, French, Hindi, Arabic, Swahili, Chinese, Hausa
-4. **Tier 4 — Knowledge Graph**: If KG activates an emergency condition with score > 0.75, adds a WARNING flag (never IMMEDIATE — prevents false positives from statistical hypotheses)
+1. **Tier 1 - Exact Keywords (IMMEDIATE)**: "chest pain", "can't breathe", "suicidal thoughts", "stroke symptoms", "severe bleeding", "anaphylaxis" → triggers emergency, stops conversation
+2. **Tier 2 - English Regex Patterns**: Compiled regex with word boundaries for nuanced matching (e.g., "seizure" but not "anti-seizure medication")
+3. **Tier 3 - Multilingual Patterns**: Language-specific emergency phrases in Spanish, French, Hindi, Arabic, Swahili, Chinese, Hausa
+4. **Tier 4 - Knowledge Graph**: If KG activates an emergency condition with score > 0.75, adds a WARNING flag (never IMMEDIATE - prevents false positives from statistical hypotheses)
 
 `RedFlagResult` contains:
-- `is_emergency` (bool) — only true for IMMEDIATE severity
-- `severity` — IMMEDIATE / URGENT / WARNING
-- `flags` — list of detected flag details
-- `emergency_numbers` — country-specific numbers
+- `is_emergency` (bool) - only true for IMMEDIATE severity
+- `severity` - IMMEDIATE / URGENT / WARNING
+- `flags` - list of detected flag details
+- `emergency_numbers` - country-specific numbers
 
 **Critical design decision**: KG flags are WARNING only, never IMMEDIATE. This prevents the graph from false-triggering emergencies (e.g., headache + fever ≠ meningitis emergency). Only explicit patient statements trigger IMMEDIATE.
 
@@ -621,11 +621,11 @@ Key functions:
 ### TypeScript Types (`types/index.ts`)
 
 Key interfaces:
-- `Case` — matches backend `get_case_for_frontend()` shape exactly
-- `Doctor` — doctor profile
-- `KGNavigationResult` — conditions, specialty, follow-up questions, graph paths
-- `TriageBreakdown` — explainable triage score components
-- `CaseExplainability` — language banner, patient evidence, extraction, safety, ambiguity
+- `Case` - matches backend `get_case_for_frontend()` shape exactly
+- `Doctor` - doctor profile
+- `KGNavigationResult` - conditions, specialty, follow-up questions, graph paths
+- `TriageBreakdown` - explainable triage score components
+- `CaseExplainability` - language banner, patient evidence, extraction, safety, ambiguity
 
 ---
 
@@ -649,10 +649,10 @@ Single-page application served at `/call`. Features:
 5. **Summary Card**: Case ID, triage level, symptoms, urgency, link to doctor portal
 
 ### Audio System
-- `beep(freq, dur)` — short Web Audio API tone
-- `readyTone()` — ascending two-note tone (660Hz → 880Hz over 1.8s)
+- `beep(freq, dur)` - short Web Audio API tone
+- `readyTone()` - ascending two-note tone (660Hz → 880Hz over 1.8s)
 - After every AI response (both ElevenLabs and browser fallback), a two-tone beep signals "your turn"
-- No spoken "go ahead" or "I'm listening" prompts — clean beep tones only
+- No spoken "go ahead" or "I'm listening" prompts - clean beep tones only
 
 ### Speech-to-Text
 Two STT methods:
@@ -849,13 +849,13 @@ services:
 ```
 
 Required Render environment variables (set in dashboard, `sync: false`):
-- `DATABASE_URL` — PostgreSQL connection string (Supabase)
+- `DATABASE_URL` - PostgreSQL connection string (Supabase)
 - `ANTHROPIC_API_KEY`
 - `OPENAI_API_KEY`
 - `ELEVENLABS_API_KEY`
 - `REDIS_URL`
 - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_API_KEY_SECRET`
-- `PUBLIC_BASE_URL` — for Twilio webhook URL construction
+- `PUBLIC_BASE_URL` - for Twilio webhook URL construction
 
 ### Doctor Portal (Vercel)
 
@@ -993,7 +993,7 @@ NEXT_PUBLIC_API_URL=https://claude-hackathon-u86l.onrender.com
 
 2. **`language_service.py` hardcodes model**: Uses `"claude-haiku-4-5-20241022"` instead of `TRANSLATION_MODEL` from config. Should read from config.
 
-3. **Browser STT language coverage**: Web Speech API doesn't support Swahili, Yoruba, Hausa — only Whisper STT works for these. The UI should guide users to the Whisper button for unsupported languages.
+3. **Browser STT language coverage**: Web Speech API doesn't support Swahili, Yoruba, Hausa - only Whisper STT works for these. The UI should guide users to the Whisper button for unsupported languages.
 
 4. **Stale Twilio signature validation**: `SKIP_TWILIO_SIGNATURE` is set to `"0"` in render.yaml but webhook URL may not be configured. Need `PUBLIC_BASE_URL` set correctly.
 

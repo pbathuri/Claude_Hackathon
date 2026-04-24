@@ -40,9 +40,9 @@ chmod +x scripts/export-github-branches.sh   # once
 
 ## Versions & stack signals (not every branch has the same files)
 
-Where the **doctor portal** exists, `doctor-portal/package.json` is typically **version `0.1.0`**, **Next.js 14**, **React 18**, **Node ≥ 18** — differences between branches are **features and pages**, not usually the semver in `package.json`.
+Where the **doctor portal** exists, `doctor-portal/package.json` is typically **version `0.1.0`**, **Next.js 14**, **React 18**, **Node ≥ 18** - differences between branches are **features and pages**, not usually the semver in `package.json`.
 
-Where **`backend/requirements.txt`** exists (via root `-r backend/requirements.txt`), pinned examples include **FastAPI 0.115.x**, **Anthropic**, **Twilio**, **Alembic**, **SQLAlchemy 2.x** — again, **branch diffs** matter more than a single “version number” for the whole product.
+Where **`backend/requirements.txt`** exists (via root `-r backend/requirements.txt`), pinned examples include **FastAPI 0.115.x**, **Anthropic**, **Twilio**, **Alembic**, **SQLAlchemy 2.x** - again, **branch diffs** matter more than a single “version number” for the whole product.
 
 **Python**: branches that include `.python-version` commonly pin **3.11** (check the file inside each export if needed).
 
@@ -65,7 +65,7 @@ So: **`main` is ahead** of most named branches. **`updated-call-fixes` is the od
 
 ## Pros / cons by branch
 
-### `main` — **recommended default**
+### `main` - **recommended default**
 
 - **Pros**: Richest tree (backend, doctor portal, docs, Docker, CI, archives, integration guides); latest Twilio Gather/silence handling and voice workflow work; best match to “what we run and deploy now.”
 - **Cons**: Moves quickly; you need discipline (tests, env vars) when pulling.
@@ -86,7 +86,7 @@ So: **`main` is ahead** of most named branches. **`updated-call-fixes` is the od
 ### `updated-call-fixes`
 
 - **Pros**: Carries **branch-only** work (e.g. Dockerfile emphasis, portal-related fixes in its timeline) that might be worth **cherry-picking** if not already on `main`.
-- **Cons**: **Diverged** — missing most recent `main` fixes; **not** a safe drop-in replacement for current production behavior without a merge/rebase review.
+- **Cons**: **Diverged** - missing most recent `main` fixes; **not** a safe drop-in replacement for current production behavior without a merge/rebase review.
 - **Use for**: Mining specific commits; **not** recommended as primary branch without reconciliation with `main`.
 
 ### `caller-api`
@@ -121,6 +121,6 @@ There is no universal answer:
 
 ## Safety notes
 
-- Exports contain **no git history** — only file trees. Use `git checkout <branch>` or `git worktree` when you need history, bisect, or blame.
+- Exports contain **no git history** - only file trees. Use `git checkout <branch>` or `git worktree` when you need history, bisect, or blame.
 - Do not paste **secrets** into tracked docs; this file intentionally references only **public** repo metadata.
 - Regenerating `branch_exports/` **overwrites** that directory; copy anything you edited inside it before re-running the script.

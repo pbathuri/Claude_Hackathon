@@ -1,7 +1,7 @@
-# Phase 06 — FHIR Interoperability
+# Phase 06 - FHIR Interoperability
 
 ## Objective
-Provide FHIR R4 export adapters so internal domain models can be serialized into standards-compliant health data resources. These are read-only mapping functions — they do not modify the database.
+Provide FHIR R4 export adapters so internal domain models can be serialized into standards-compliant health data resources. These are read-only mapping functions - they do not modify the database.
 
 ## Files Created
 - `backend/interoperability/__init__.py`

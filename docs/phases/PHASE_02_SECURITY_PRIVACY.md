@@ -1,4 +1,4 @@
-# Phase 02 — Security & Privacy
+# Phase 02 - Security & Privacy
 
 ## Objective
 
@@ -11,7 +11,7 @@ Establish authentication, authorization, and request traceability for the WHO te
 | `backend/auth/__init__.py` | Package marker |
 | `backend/auth/middleware.py` | Auth scaffold: demo mode, API key, doctor header, role gates |
 | `backend/observability/__init__.py` | Package marker |
-| `backend/observability/middleware.py` | `RequestIDMiddleware` — injects `X-Request-ID`, logs method/path/status/elapsed |
+| `backend/observability/middleware.py` | `RequestIDMiddleware` - injects `X-Request-ID`, logs method/path/status/elapsed |
 | `backend/main.py` | Added `RequestIDMiddleware` after CORS; added `DEMO_MODE` feature flag with startup warning |
 
 ## Key Design Decisions

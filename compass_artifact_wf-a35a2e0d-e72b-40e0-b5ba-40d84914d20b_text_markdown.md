@@ -1,12 +1,12 @@
 # Building an AI telehealth backend for underserved populations
 
-**A complete system architecture for phone-based medical intake, triage, and doctor routing across Nigeria, India, and the Philippines is achievable with Twilio, Claude API, and open health data — but key constraints around local phone number availability, speech recognition accuracy for accented medical English, and regulatory ambiguity in all three countries will shape your design decisions.** This guide covers all 10 backend elements with production-ready code, pricing data, and safety patterns optimized for hackathon speed.
+**A complete system architecture for phone-based medical intake, triage, and doctor routing across Nigeria, India, and the Philippines is achievable with Twilio, Claude API, and open health data - but key constraints around local phone number availability, speech recognition accuracy for accented medical English, and regulatory ambiguity in all three countries will shape your design decisions.** This guide covers all 10 backend elements with production-ready code, pricing data, and safety patterns optimized for hackathon speed.
 
 ---
 
 ## 1. Twilio voice and SMS integration hits a critical constraint
 
-**Twilio does not sell local phone numbers for India (+91) or the Philippines (+63)**, and has limited availability for Nigeria (+234). The hackathon-viable solution: purchase a **US toll-free number** ($2/month) and have patients call internationally, or — strongly recommended — use **WhatsApp Business API** as the primary channel, since WhatsApp penetration exceeds 90% in all three target countries.
+**Twilio does not sell local phone numbers for India (+91) or the Philippines (+63)**, and has limited availability for Nigeria (+234). The hackathon-viable solution: purchase a **US toll-free number** ($2/month) and have patients call internationally, or - strongly recommended - use **WhatsApp Business API** as the primary channel, since WhatsApp penetration exceeds 90% in all three target countries.
 
 | Cost element | Nigeria (+234) | India (+91) | Philippines (+63) | US toll-free |
 |---|---|---|---|---|
@@ -15,10 +15,10 @@
 | **Outbound SMS** | ~$0.044/msg | ~$0.04/msg | ~$0.038/msg | N/A |
 | **WhatsApp msg** | $0.005 + Meta fee | $0.005 + Meta fee | $0.005 + Meta fee | N/A |
 
-The core call flow uses Twilio's `<Gather>` TwiML element with `input="speech"` for built-in speech recognition — zero additional infrastructure for a prototype. The `speech_model="experimental_conversations"` setting provides the best accuracy for natural dialogue, and `speech_timeout="auto"` intelligently detects end of speech.
+The core call flow uses Twilio's `<Gather>` TwiML element with `input="speech"` for built-in speech recognition - zero additional infrastructure for a prototype. The `speech_model="experimental_conversations"` setting provides the best accuracy for natural dialogue, and `speech_timeout="auto"` intelligently detects end of speech.
 
 ```python
-# app.py — Twilio inbound call handler (Flask)
+# app.py - Twilio inbound call handler (Flask)
 from flask import Flask, request, session
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.rest import Client
@@ -92,13 +92,13 @@ def send_sms_link():
     return str(response), 200, {'Content-Type': 'text/xml'}
 ```
 
-The image upload endpoint serves a minimal mobile-friendly HTML form with `<input type="file" accept="image/*" capture="environment">`, which opens the camera directly on mobile devices. WhatsApp is the better channel for this — patients can reply with photos natively.
+The image upload endpoint serves a minimal mobile-friendly HTML form with `<input type="file" accept="image/*" capture="environment">`, which opens the camera directly on mobile devices. WhatsApp is the better channel for this - patients can reply with photos natively.
 
 ---
 
 ## 2. Speech-to-text: Whisper wins on cost, Google wins on medical accuracy
 
-The comparison of three STT services reveals a clear tradeoff. **OpenAI Whisper API costs $0.006/minute** (cheapest by 3×), but **Google Cloud's medical models** offer the best clinical vocabulary accuracy — though only for American English. All services struggle significantly with accented medical speech.
+The comparison of three STT services reveals a clear tradeoff. **OpenAI Whisper API costs $0.006/minute** (cheapest by 3×), but **Google Cloud's medical models** offer the best clinical vocabulary accuracy - though only for American English. All services struggle significantly with accented medical speech.
 
 | Feature | OpenAI Whisper | Google Cloud STT | Azure Speech |
 |---|---|---|---|
@@ -111,7 +111,7 @@ The comparison of three STT services reveals a clear tradeoff. **OpenAI Whisper 
 | **Real-time streaming** | ❌ Batch only | ✅ ~300ms | ✅ ~300ms |
 | **Hackathon setup time** | ⭐ 5 minutes | 30 minutes | 30 minutes |
 
-**A critical finding from academic research**: for Indian clinical interviews, all ASR systems show **50%+ word error rates** on medical terminology. The essential mitigation is an **LLM post-correction step** — pipe the raw transcript through GPT-4o-mini with a medical context prompt to fix terminology errors. This approach consistently improves accuracy by 20–30%.
+**A critical finding from academic research**: for Indian clinical interviews, all ASR systems show **50%+ word error rates** on medical terminology. The essential mitigation is an **LLM post-correction step** - pipe the raw transcript through GPT-4o-mini with a medical context prompt to fix terminology errors. This approach consistently improves accuracy by 20–30%.
 
 ```python
 # Post-correction pattern for medical transcripts
@@ -140,7 +140,7 @@ def correct_medical_transcript(raw_transcript: str) -> str:
 
 The START (Simple Triage and Rapid Treatment) decision tree classifies patients into four categories through five sequential checks. Since START was designed for in-person field assessment, phone-based triage requires proxy questions that a bystander or patient can answer.
 
-The core algorithm is deterministic and compact — a single function handles the entire classification:
+The core algorithm is deterministic and compact - a single function handles the entire classification:
 
 ```python
 from enum import Enum
@@ -148,7 +148,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 class TriageCategory(Enum):
-    GREEN  = "GREEN (Minor)"      # Can walk — walking wounded
+    GREEN  = "GREEN (Minor)"      # Can walk - walking wounded
     YELLOW = "YELLOW (Delayed)"   # Serious but can wait
     RED    = "RED (Immediate)"    # Life-threatening
     BLACK  = "BLACK (Expectant)"  # No signs of life
@@ -181,24 +181,24 @@ def start_triage(p: PatientAssessment) -> TriageCategory:
 | START criterion | Phone proxy question |
 |---|---|
 | Ambulatory status | "Are you able to stand up and walk across the room right now?" |
-| Breathing check | "Can you see their chest moving? Hold your hand near their mouth — do you feel air?" |
-| Respiratory rate | "Watch their chest. I'll count 15 seconds — tell me how many breaths." (×4) |
+| Breathing check | "Can you see their chest moving? Hold your hand near their mouth - do you feel air?" |
+| Respiratory rate | "Watch their chest. I'll count 15 seconds - tell me how many breaths." (×4) |
 | Perfusion | "Press firmly on their fingernail for 5 seconds. Does pink color return within 2 seconds?" |
 | Mental status | "Ask them to squeeze your hand. Can they follow that instruction?" |
 
-**The PIH/openmrs-module-edtriageapp** on GitHub is the most relevant open-source reference — Partners In Health built an ED triage module supporting Red/Orange/Yellow/Green categories for adults, children, and infants. For phone-based assessment specifically, the **Schmitt-Thompson protocols** (used in 25+ million calls/year) are the clinical gold standard, though they require licensing. The **Canadian Triage and Acuity Scale (CTAS)** is the most adaptable validated system for a phone-based tool, using complaint-based flowcharts with defined modifiers.
+**The PIH/openmrs-module-edtriageapp** on GitHub is the most relevant open-source reference - Partners In Health built an ED triage module supporting Red/Orange/Yellow/Green categories for adults, children, and infants. For phone-based assessment specifically, the **Schmitt-Thompson protocols** (used in 25+ million calls/year) are the clinical gold standard, though they require licensing. The **Canadian Triage and Acuity Scale (CTAS)** is the most adaptable validated system for a phone-based tool, using complaint-based flowcharts with defined modifiers.
 
 ---
 
 ## 4. ICD-11 mapping: the NLM API requires zero authentication
 
-Two APIs serve ICD-11 code lookup. The **WHO official API** requires OAuth 2.0 registration and offers the full entity model. But for a hackathon, the **NLM Clinical Tables API works immediately with no authentication** — just HTTP GET requests returning ICD-11 codes from free text.
+Two APIs serve ICD-11 code lookup. The **WHO official API** requires OAuth 2.0 registration and offers the full entity model. But for a hackathon, the **NLM Clinical Tables API works immediately with no authentication** - just HTTP GET requests returning ICD-11 codes from free text.
 
 ```python
 import requests
 
 def search_icd11(term: str, max_results: int = 5) -> list[dict]:
-    """Search ICD-11 codes via NLM Clinical Tables — no auth needed."""
+    """Search ICD-11 codes via NLM Clinical Tables - no auth needed."""
     resp = requests.get(
         "https://clinicaltables.nlm.nih.gov/api/icd11_codes/v3/search",
         params={"terms": term, "sf": "code,title",
@@ -211,7 +211,7 @@ def search_icd11(term: str, max_results: int = 5) -> list[dict]:
 # → [{"code": "MD81", "title": "Chest pain"}, ...]
 ```
 
-For the full pipeline — free-text transcript to structured ICD-11 codes — combine **scispaCy** for medical named entity recognition with the NLM API for code lookup:
+For the full pipeline - free-text transcript to structured ICD-11 codes - combine **scispaCy** for medical named entity recognition with the NLM API for code lookup:
 
 ```python
 import spacy
@@ -236,7 +236,7 @@ The **WHO ICD-11 API** at `https://id.who.int` provides richer entity data inclu
 
 ## 5. WHO GHO API provides the data backbone for country health profiles
 
-The WHO Global Health Observatory OData API serves **1,000+ health indicators** for 194 countries — free, no authentication, JSON responses. Three indicators directly inform the permission matrix:
+The WHO Global Health Observatory OData API serves **1,000+ health indicators** for 194 countries - free, no authentication, JSON responses. Three indicators directly inform the permission matrix:
 
 | Indicator | Code | What it measures |
 |---|---|---|
@@ -274,7 +274,7 @@ def build_health_profile(country: str) -> dict:
 
 ## 6. Claude API powers safe medical intake with structured output
 
-The Anthropic API's `tool_use` feature is the key mechanism for extracting structured symptom data from a conversational intake. **Claude Haiku 4.5 at $1/$5 per million input/output tokens** costs roughly **$0.02 per complete intake conversation** — well within hackathon budgets.
+The Anthropic API's `tool_use` feature is the key mechanism for extracting structured symptom data from a conversational intake. **Claude Haiku 4.5 at $1/$5 per million input/output tokens** costs roughly **$0.02 per complete intake conversation** - well within hackathon budgets.
 
 The system prompt establishes absolute safety boundaries. The tool definition forces Claude to output structured JSON when intake is complete:
 
@@ -284,7 +284,7 @@ SYSTEM_PROMPT = """You are a medical intake assistant for a telehealth platform.
 ⚠️ CRITICAL SAFETY RULES:
 1. You are NOT a doctor. You CANNOT diagnose, prescribe, or treat.
 2. Every response must include: "I am not a doctor. This is for intake only."
-3. EMERGENCY DETECTION — If the patient reports ANY of these, IMMEDIATELY
+3. EMERGENCY DETECTION - If the patient reports ANY of these, IMMEDIATELY
    set triage_level to "RED" and say "Please call emergency services now":
    - Chest pain or tightness
    - Difficulty breathing / shortness of breath
@@ -295,7 +295,7 @@ SYSTEM_PROMPT = """You are a medical intake assistant for a telehealth platform.
    - Allergic reaction with throat swelling
 4. NEVER speculate on diagnosis. NEVER say "it could be X."
 
-INTAKE FLOW — ask one question at a time:
+INTAKE FLOW - ask one question at a time:
 Step 1: Greet, state disclaimer, ask main complaint
 Step 2: Duration ("When did this start?")
 Step 3: Severity (1-10 scale)
@@ -506,7 +506,7 @@ def parse_phone(phone_str: str) -> dict:
     }
 ```
 
-**All three countries allow teleconsultation but lack comprehensive telemedicine legislation.** India is the most regulated with explicit 2020 Guidelines. Nigeria and the Philippines rely on general medical practice laws — telemedicine is permitted but operates in regulatory grey areas. None allow cross-border consultations without local licensure, so the platform must match patients exclusively with locally-licensed doctors.
+**All three countries allow teleconsultation but lack comprehensive telemedicine legislation.** India is the most regulated with explicit 2020 Guidelines. Nigeria and the Philippines rely on general medical practice laws - telemedicine is permitted but operates in regulatory grey areas. None allow cross-border consultations without local licensure, so the platform must match patients exclusively with locally-licensed doctors.
 
 ---
 
@@ -522,7 +522,7 @@ The case lifecycle follows a finite state machine with time-based transitions en
                                 [reassigned]  [reassigned]                 [closed]
 ```
 
-The critical automation: **if a doctor doesn't respond within 2 hours, the case escalates** — its triage level is boosted, it re-enters the queue at higher priority, and an admin is alerted.
+The critical automation: **if a doctor doesn't respond within 2 hours, the case escalates** - its triage level is boosted, it re-enters the queue at higher priority, and an admin is alerted.
 
 ```python
 from celery import Celery
@@ -700,6 +700,6 @@ def handle_new_patient(phone: str, first_message: str) -> dict:
 
 ## Conclusion
 
-This architecture prioritizes **three non-negotiable safety layers**: Claude's system prompt with emergency detection, the START triage classification, and the 2-hour doctor response escalation timer. The most impactful hackathon optimization is using **WhatsApp over SMS** for patient communication — it's cheaper, supports native media exchange, and has near-universal penetration across all three target markets. The deepest technical risk is **speech recognition accuracy for accented medical English** — budget for the LLM post-correction step from day one. Regulatory analysis reveals all three countries permit teleconsultation but require locally-licensed physicians, making the country-match routing logic in the priority queue not just a feature but a legal requirement.
+This architecture prioritizes **three non-negotiable safety layers**: Claude's system prompt with emergency detection, the START triage classification, and the 2-hour doctor response escalation timer. The most impactful hackathon optimization is using **WhatsApp over SMS** for patient communication - it's cheaper, supports native media exchange, and has near-universal penetration across all three target markets. The deepest technical risk is **speech recognition accuracy for accented medical English** - budget for the LLM post-correction step from day one. Regulatory analysis reveals all three countries permit teleconsultation but require locally-licensed physicians, making the country-match routing logic in the priority queue not just a feature but a legal requirement.
 
-**Total hackathon infrastructure cost**: a US Twilio number ($2/month), Claude Haiku API (~$0.02/conversation), Whisper API ($0.006/min), and a free-tier PostgreSQL instance — under $20 for a full prototype demonstration.
+**Total hackathon infrastructure cost**: a US Twilio number ($2/month), Claude Haiku API (~$0.02/conversation), Whisper API ($0.006/min), and a free-tier PostgreSQL instance - under $20 for a full prototype demonstration.

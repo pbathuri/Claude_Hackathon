@@ -2,7 +2,7 @@
 
 # Claude_Hackathon · WHO-Aligned AI Health Access
 
-**Telehealth intake for underserved populations — voice/web, a self-evolving medical knowledge graph, and a doctor dashboard that teaches the graph back.**
+**Telehealth intake for underserved populations - voice/web, a self-evolving medical knowledge graph, and a doctor dashboard that teaches the graph back.**
 
 <br/>
 
@@ -18,7 +18,7 @@
 
 ## TL;DR
 
-A caller dials a phone number, speaks their symptoms, and within ~90 seconds a licensed doctor somewhere else sees a structured case — ICD-11 coded, triage-scored, with predicted conditions ranked by a graph that **learns from every doctor response**. Built for jurisdictions where in-person access is the bottleneck.
+A caller dials a phone number, speaks their symptoms, and within ~90 seconds a licensed doctor somewhere else sees a structured case - ICD-11 coded, triage-scored, with predicted conditions ranked by a graph that **learns from every doctor response**. Built for jurisdictions where in-person access is the bottleneck.
 
 | | |
 |---|---|
@@ -45,7 +45,7 @@ flowchart LR
     G -.->|reinforce paths| D
 ```
 
-The graph is **Physarum-inspired** — nodes activate, edges carry conductivity that decays without use and strengthens along correct paths when a doctor confirms a diagnosis. The system genuinely gets better with every closed case.
+The graph is **Physarum-inspired** - nodes activate, edges carry conductivity that decays without use and strengthens along correct paths when a doctor confirms a diagnosis. The system genuinely gets better with every closed case.
 
 ---
 
@@ -67,14 +67,14 @@ The graph is **Physarum-inspired** — nodes activate, edges carry conductivity 
 1. Open the portal → dashboard shows live case count, triage distribution, country breakdown.
 2. Case detail view: symptoms, AI notes, red flags, **KG Insights** panel with predicted conditions & recommended specialty.
 3. Doctor submits diagnosis + guidance.
-4. **KG Backpropagation** fires — correct symptom → condition edges strengthen, wrong ones weaken. The graph learns.
+4. **KG Backpropagation** fires - correct symptom → condition edges strengthen, wrong ones weaken. The graph learns.
 5. `/knowledge-graph` page visualises hottest pathways and lets you explore the graph symptom-by-symptom.
 
 ---
 
 ## Architecture
 
-### Backend — FastAPI (Render)
+### Backend - FastAPI (Render)
 
 ```
 backend/
@@ -101,7 +101,7 @@ backend/
 └── test_e2e.py                     # 41 E2E tests · 97% pass
 ```
 
-### Doctor Portal — Next.js (Vercel)
+### Doctor Portal - Next.js (Vercel)
 
 ```
 doctor-portal/
@@ -135,7 +135,7 @@ Environment keys needed: `ANTHROPIC_API_KEY`, `DATABASE_URL`, `TWILIO_*`, `ELEVE
 
 ## What's interesting here
 
-- **The graph is the main character.** It's not a retrieval index — it's a living structure that encodes which symptom-chains actually led to which diagnoses.
+- **The graph is the main character.** It's not a retrieval index - it's a living structure that encodes which symptom-chains actually led to which diagnoses.
 - **Country-aware disclosure tiers.** Regulatory posture differs per jurisdiction; the system matches.
 - **Triage ≠ diagnosis.** START gets you an urgency category fast; the doctor still diagnoses.
 - **97% E2E pass on 41 tests.** Built in hackathon time, tested like a product.

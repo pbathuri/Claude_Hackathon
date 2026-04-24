@@ -1,4 +1,4 @@
-# Phase 00 — Repo Audit and Target Architecture
+# Phase 00 - Repo Audit and Target Architecture
 
 ## Objective
 Deep, file-specific audit of the entire codebase identifying data corruption risks, contract mismatches, security gaps, safety failures, dead code, and production blockers. Produces a proposed target architecture with module boundaries.
@@ -19,55 +19,55 @@ Deep, file-specific audit of the entire codebase identifying data corruption ris
 
 ## Critical Findings Summary
 
-### Tier 1 — Data Corruption / Silent Harm
+### Tier 1 - Data Corruption / Silent Harm
 
 | ID | Finding | Files | Severity |
 |----|---------|-------|----------|
-| D1 | `twilio_voice._submit_twilio_case` hardcodes `severity: 5`, `duration: ""`, `body_area: ""` — clinical data loss | `backend/routers/twilio_voice.py:340-344` | CRITICAL |
-| D2 | `src/main.py` uses last assistant reply as `transcript_summary` — doctor sees AI text, not patient facts | `src/main.py` submit block | CRITICAL |
+| D1 | `twilio_voice._submit_twilio_case` hardcodes `severity: 5`, `duration: ""`, `body_area: ""` - clinical data loss | `backend/routers/twilio_voice.py:340-344` | CRITICAL |
+| D2 | `src/main.py` uses last assistant reply as `transcript_summary` - doctor sees AI text, not patient facts | `src/main.py` submit block | CRITICAL |
 | D3 | Two different priority formulas: `complete_intake` vs `caller.submit_conversation` overwrite each other | `backend/services/case_service.py`, `backend/routers/caller.py` | CRITICAL |
-| D4 | Portal `fetchWithFallback` returns mock data on ANY error — production can show fictitious patients | `doctor-portal/lib/api.ts` | CRITICAL |
-| D5 | `Doctor.availability` is `boolean` in TypeScript but `string` in API — dashboard status always truthy | `doctor-portal/types/index.ts` | HIGH |
-| D6 | Portal assigns `doctor_id = "portal-doctor"` — may not exist server-side | `doctor-portal/app/cases/[id]/page.tsx` | HIGH |
-| D7 | `triage_from_intake` defaults invalid triage to GREEN — can downgrade unsafe AI output | `backend/services/triage_service.py` | HIGH |
-| D8 | `priority_queue.get_next_case_for_doctor` bypasses `assign_case` — no audit, no verification | `backend/services/priority_queue.py` | HIGH |
+| D4 | Portal `fetchWithFallback` returns mock data on ANY error - production can show fictitious patients | `doctor-portal/lib/api.ts` | CRITICAL |
+| D5 | `Doctor.availability` is `boolean` in TypeScript but `string` in API - dashboard status always truthy | `doctor-portal/types/index.ts` | HIGH |
+| D6 | Portal assigns `doctor_id = "portal-doctor"` - may not exist server-side | `doctor-portal/app/cases/[id]/page.tsx` | HIGH |
+| D7 | `triage_from_intake` defaults invalid triage to GREEN - can downgrade unsafe AI output | `backend/services/triage_service.py` | HIGH |
+| D8 | `priority_queue.get_next_case_for_doctor` bypasses `assign_case` - no audit, no verification | `backend/services/priority_queue.py` | HIGH |
 
-### Tier 2 — Security / Privacy
-
-| ID | Finding | Files |
-|----|---------|-------|
-| S1 | No authentication on any backend route — entire API is public | All routers |
-| S2 | No Twilio request signature validation — forged webhooks create cases | `twilio_voice.py` |
-| S3 | Unsupported country falls back to Nigeria — permission bypass | `twilio_voice.py:79-87` |
-| S4 | `POST /doctors/{id}/verify` unauthenticated — anyone can verify doctors | `doctors.py` |
-| S5 | Image upload not bound to case/session — orphan files, no MIME validation | `caller.py:768-778` |
-| S6 | Phone SHA-256 without salt — weak pseudonymization | `country_service.py` |
-| S7 | No migration framework — `create_all` only | `database.py` |
-| S8 | `consent_given` is boolean only — no versioning, timestamp, or channel | `models.py` |
-
-### Tier 3 — Safety / Clinical
+### Tier 2 - Security / Privacy
 
 | ID | Finding | Files |
 |----|---------|-------|
-| C1 | Emergency detection is keyword-only — misses paraphrases, colloquial terms | `triage_service.py`, `graph.py` |
+| S1 | No authentication on any backend route - entire API is public | All routers |
+| S2 | No Twilio request signature validation - forged webhooks create cases | `twilio_voice.py` |
+| S3 | Unsupported country falls back to Nigeria - permission bypass | `twilio_voice.py:79-87` |
+| S4 | `POST /doctors/{id}/verify` unauthenticated - anyone can verify doctors | `doctors.py` |
+| S5 | Image upload not bound to case/session - orphan files, no MIME validation | `caller.py:768-778` |
+| S6 | Phone SHA-256 without salt - weak pseudonymization | `country_service.py` |
+| S7 | No migration framework - `create_all` only | `database.py` |
+| S8 | `consent_given` is boolean only - no versioning, timestamp, or channel | `models.py` |
+
+### Tier 3 - Safety / Clinical
+
+| ID | Finding | Files |
+|----|---------|-------|
+| C1 | Emergency detection is keyword-only - misses paraphrases, colloquial terms | `triage_service.py`, `graph.py` |
 | C2 | Emergency keyword lists duplicated and divergent between backend and src | `triage_service.py`, `src/graph.py` |
 | C3 | `start_triage` (START protocol) is never called from any intake path | `triage_service.py` |
-| C4 | No "insufficient information" pathway — system always produces a triage level | All intake paths |
+| C4 | No "insufficient information" pathway - system always produces a triage level | All intake paths |
 | C5 | No structured separation: patient-reported vs AI-extracted vs rule-output vs clinician-conclusion | Models, case_service |
 | C6 | FHIR export defaults `consent_given: True` when patient missing | `cases.py` |
-| C7 | BLACK triage maps to "Low" urgency in portal — dangerous semantics | `case_service.py` |
+| C7 | BLACK triage maps to "Low" urgency in portal - dangerous semantics | `case_service.py` |
 | C8 | Scheduler escalates without audit log entries | `scheduler_service.py` |
 
-### Tier 4 — Operability
+### Tier 4 - Operability
 
 | ID | Finding | Files |
 |----|---------|-------|
 | O1 | No idempotency on session/start, submit, assign, respond | All mutation routes |
-| O2 | All session state in-memory — lost on restart | `caller.py`, `twilio_voice.py`, `intake_service.py` |
+| O2 | All session state in-memory - lost on restart | `caller.py`, `twilio_voice.py`, `intake_service.py` |
 | O3 | No request IDs or structured logging | `main.py` |
 | O4 | No feature flags for KG, external APIs, demo mocks | All |
-| O5 | Follow-up "sent" is stub — no actual SMS/notification | `scheduler_service.py` |
-| O6 | Case status is free-form string — no DB constraint or state machine | `models.py` |
+| O5 | Follow-up "sent" is stub - no actual SMS/notification | `scheduler_service.py` |
+| O6 | Case status is free-form string - no DB constraint or state machine | `models.py` |
 
 ---
 
@@ -194,4 +194,4 @@ src/                                # Caller voice/SMS pipeline (LangGraph)
 - Visibility into all critical issues
 
 ## Remaining Gaps
-- Everything identified above — addressed in Phases 01-08
+- Everything identified above - addressed in Phases 01-08

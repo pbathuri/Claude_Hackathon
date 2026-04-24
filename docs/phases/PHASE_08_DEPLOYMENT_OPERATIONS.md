@@ -1,4 +1,4 @@
-# Phase 08 — Deployment Operations
+# Phase 08 - Deployment Operations
 
 ## Objective
 Feature flags for safe deployment, environment separation (demo vs production), and operational kill switches.

@@ -14,7 +14,7 @@ Supabase **does not show** your existing Postgres password again after creation 
 4. Scroll to **Database password** (sometimes under **Connection info**).
 5. If you never saved the password from when the project was created, click **Reset database password**, choose a strong password, and **save it somewhere safe** (password manager). Updating the password applies immediately to Postgres; put the **new** value in `DATABASE_URL` everywhere (Render, local `.env`).
 
-Then use **Connection string** → **URI** on the same page: it will show `postgresql://postgres.[ref]:[YOUR-PASSWORD]@...` or `postgresql://postgres:[YOUR-PASSWORD]@db.<ref>.supabase.co:5432/postgres` — paste your real password in place of the placeholder. If the password contains `@`, `#`, `/`, or `%`, [URL-encode](https://developer.mozilla.org/en-US/docs/Glossary/Percent-encoding) those characters in the URI or use a password without them.
+Then use **Connection string** → **URI** on the same page: it will show `postgresql://postgres.[ref]:[YOUR-PASSWORD]@...` or `postgresql://postgres:[YOUR-PASSWORD]@db.<ref>.supabase.co:5432/postgres` - paste your real password in place of the placeholder. If the password contains `@`, `#`, `/`, or `%`, [URL-encode](https://developer.mozilla.org/en-US/docs/Glossary/Percent-encoding) those characters in the URI or use a password without them.
 
 **Correct database name in the path is `postgres` (full word),** not `postgre`.
 
@@ -37,7 +37,7 @@ The **direct** connection host (`db.<ref>.supabase.co`, port 5432) resolves to *
    - **Host** is `aws-0-<region>.pooler.supabase.com` (not `db.<ref>.supabase.co`)
    - **Port** is `6543` (not `5432`)
 
-4. If the URI has no `sslmode`, append **`?sslmode=require`** (the app also forces TLS for `*.supabase.co` when `sslmode` is missing). The pooler hostname contains `supabase.com`, so also add this check — or just always append the param.
+4. If the URI has no `sslmode`, append **`?sslmode=require`** (the app also forces TLS for `*.supabase.co` when `sslmode` is missing). The pooler hostname contains `supabase.com`, so also add this check - or just always append the param.
 
 Paste that full pooler URI into Render → **Environment** → `DATABASE_URL` (and into local `backend/.env` if you use Postgres locally).
 
@@ -59,7 +59,7 @@ In the Render dashboard → your Web Service → **Settings**:
 |--------|--------|
 | **Root Directory** | `backend` |
 | **Build Command** | `pip install -r requirements.txt && python -c "import alembic, psycopg2"` |
-| **Pre-Deploy Command** | *(leave empty)* — migrations already run in the start command below |
+| **Pre-Deploy Command** | *(leave empty)* - migrations already run in the start command below |
 | **Start Command** | `python -m alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT` |
 
 Because the working directory is already `backend`, do **not** prefix with `cd backend &&`.
@@ -78,8 +78,8 @@ Optional: set **Pre-Deploy Command** to `cd backend && python -m alembic upgrade
 
 That means **Alembic was not installed** in the build environment. Common causes:
 
-1. **GitHub is behind your laptop** — `backend/requirements.txt` on `main` must include `alembic` and `psycopg2-binary`. Commit and push, then redeploy.
-2. **Wrong Root Directory** — Build must run from `backend` so it reads `backend/requirements.txt` (the file that lists Alembic). If the root `requirements.txt` is a stub (`-r backend/requirements.txt`), either use **Root Directory** `backend` or install from the repo root with `pip install -r backend/requirements.txt`.
+1. **GitHub is behind your laptop** - `backend/requirements.txt` on `main` must include `alembic` and `psycopg2-binary`. Commit and push, then redeploy.
+2. **Wrong Root Directory** - Build must run from `backend` so it reads `backend/requirements.txt` (the file that lists Alembic). If the root `requirements.txt` is a stub (`-r backend/requirements.txt`), either use **Root Directory** `backend` or install from the repo root with `pip install -r backend/requirements.txt`.
 
 Use **`python -m alembic upgrade head`** instead of **`alembic upgrade head`** in the start command (avoids rare `PATH` issues). Adding `&& python -c "import alembic, psycopg2"` to the **build command** makes the build fail early if those packages are missing.
 
@@ -92,9 +92,9 @@ This backend’s schema is managed with **Alembic** (`backend/alembic/`). There 
 | **Alembic only** (recommended for this app) | You deploy FastAPI on Render. Run `alembic upgrade head` on deploy. Set `DATABASE_URL` to the Supabase Postgres URI. You do **not** need `supabase db push` for the Python app’s tables. |
 | **Supabase CLI migrations** | You maintain SQL migrations under `supabase/migrations/` and apply with `supabase db push`. That is a **second** migration track. Avoid running **both** Alembic and Supabase migrations against the same tables unless you carefully avoid duplicate DDL. |
 
-**Vercel integrated with Supabase** usually supplies env vars to **frontend** (e.g. anon key, URL). The **FastAPI** service on Render still needs **`DATABASE_URL`** (the `postgresql://…` URI) set separately in Render — it does not use the Supabase REST URL for SQLAlchemy.
+**Vercel integrated with Supabase** usually supplies env vars to **frontend** (e.g. anon key, URL). The **FastAPI** service on Render still needs **`DATABASE_URL`** (the `postgresql://…` URI) set separately in Render - it does not use the Supabase REST URL for SQLAlchemy.
 
-**CLI tip:** `supabase link --project-ref alknctbyuwwhgejvjyvw` ties your local Supabase CLI to this project; use it if you add Edge Functions, RLS policies as SQL, or storage — not required for Render + Alembic alone.
+**CLI tip:** `supabase link --project-ref alknctbyuwwhgejvjyvw` ties your local Supabase CLI to this project; use it if you add Edge Functions, RLS policies as SQL, or storage - not required for Render + Alembic alone.
 
 ## 3. Twilio webhooks
 
@@ -117,7 +117,7 @@ This backend’s schema is managed with **Alembic** (`backend/alembic/`). There 
 
 ## 5. Verify
 
-- `GET /health-check` — `dependencies.database` should be `true` after Postgres is correct.
+- `GET /health-check` - `dependencies.database` should be `true` after Postgres is correct.
 - Place a test call after removing `SKIP_TWILIO_SIGNATURE`.
 
 ## 6. Doctor portal on Render (Next.js)
@@ -131,4 +131,4 @@ The API already allows `http://localhost:3000` and common origins. For a **porta
 5. On the **backend** Web Service → **Environment**, add:
    - **`CORS_EXTRA_ORIGINS`** = that URL (no trailing slash). Use commas for multiple origins.
 6. Redeploy the backend (or wait for auto-deploy) so CORS picks up the new variable.
-7. Optional: change **`NEXT_PUBLIC_API_URL`** on the portal service if the API is not `https://claude-hackathon-u86l.onrender.com` — then trigger a **new deploy** of the portal so the client bundle is rebuilt with the correct API base URL.
+7. Optional: change **`NEXT_PUBLIC_API_URL`** on the portal service if the API is not `https://claude-hackathon-u86l.onrender.com` - then trigger a **new deploy** of the portal so the client bundle is rebuilt with the correct API base URL.
